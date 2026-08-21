@@ -78,14 +78,12 @@ def _env_stations():
 
 
 def resolve_name(location_id, fallback=""):
-    """Retourne le nom lisible de la station (station NPC ou Upwell)."""
+    """Retourne le nom lisible de la station (station NPC ou Upwell).
+    Aucun hardcode de station specifique : tout vient de la SDE locale
+    (eve.db) ou du fallback ID brut (citadelle non-resolue = ID affiche)."""
     loc_id = int(location_id or 0)
     if not loc_id:
         return fallback or "Inconnu"
-    if loc_id == 60003760:
-        return "Jita IV - Moon 4 - Caldari Navy Assembly Plant"
-    if loc_id in (1044752365771, 35833):
-        return "Perimeter - Tranquility Trading Tower"
     try:
         c = sqlite3.connect(EVE_DB)
         r = c.execute("SELECT stationName FROM staStations WHERE stationID=?", (loc_id,)).fetchone()
@@ -98,6 +96,35 @@ def resolve_name(location_id, fallback=""):
     if loc_id in env and env[loc_id].get("name"):
         return env[loc_id]["name"]
     return fallback or str(loc_id)
+
+
+def faction_for_station(station_id):
+    """Retourne le factionID (int) proprietaire de la station via SDE :
+    station -> solarSystemID -> constellationID -> factionID.
+    None si inconnu (citadelle non-resolue, ou SDE absente)."""
+    loc_id = int(station_id or 0)
+    if not loc_id:
+        return None
+    # citadelle Upwell : pas de faction SDE directe -> on ne devine pas
+    if loc_id >= 1000000000000:
+        return None
+    try:
+        c = sqlite3.connect(EVE_DB)
+        r = c.execute("SELECT solarSystemID FROM staStations WHERE stationID=?", (loc_id,)).fetchone()
+        if not r or not r[0]:
+            c.close()
+            return None
+        sysid = r[0]
+        r2 = c.execute("SELECT regionID, constellationID FROM mapSolarSystems WHERE solarSystemID=?", (sysid,)).fetchone()
+        if not r2:
+            c.close()
+            return None
+        const_id = r2[1]
+        r3 = c.execute("SELECT factionID FROM mapConstellations WHERE constellationID=?", (const_id,)).fetchone()
+        c.close()
+        return r3[0] if r3 else None
+    except Exception:
+        return None
 
 
 def resolve(location_id):

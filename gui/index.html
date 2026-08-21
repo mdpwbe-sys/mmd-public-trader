@@ -2075,39 +2075,90 @@
     const api = getApi(); if (!api) return;
     const cfg = api.get_broker_config ? api.get_broker_config() : {};
     const st = (cfg.standings || {});
+    const stKeys = Object.keys(st);
+    const stRows = stKeys.length ? stKeys.map(k =>
+      `<label>Standing ${k} (brut)</label><input id="cfg-st-${_esc(k)}" type="number" step="0.01" value="${st[k]||0}">`
+    ).join('') :
+      `<div class="cfg-note">Aucun standing configuré. Utilise « Auto ESI » pour peupler depuis ta faction (station de vente sélectionnée).</div>`;
+    const sc = api.get_station_config ? api.get_station_config() : {buy_station:0,sell_station:0,buy_label:'',sell_label:''};
     const body = document.getElementById('margin-body');
     body.innerHTML = `
+      <div class="margin-sub">Stations de trade (où tu places tes ordres)</div>
+      <div class="cfg-row">
+        <label>Station ACHAT (BUY)</label>
+        <input id="cfg-buy" placeholder="nom ou ID" value="${sc.buy_label ? sc.buy_label + ' (' + sc.buy_station + ')' : (sc.buy_station||'')}">
+        <button class="btn small" onclick="stationSearch('buy')">Rechercher</button>
+        <div id="buy-results" class="station-results"></div>
+        <label>Station VENTE (SELL)</label>
+        <input id="cfg-sell" placeholder="nom ou ID" value="${sc.sell_label ? sc.sell_label + ' (' + sc.sell_station + ')' : (sc.sell_station||'')}">
+        <button class="btn small" onclick="stationSearch('sell')">Rechercher</button>
+        <div id="sell-results" class="station-results"></div>
+      </div>
       <div class="margin-sub">Standings & skills (bruts, non modifies par Connections)</div>
       <div class="cfg-row">
         <label>Broker Relations (0-5)</label><input id="cfg-br" type="number" min="0" max="5" step="1" value="${cfg.broker_relations||0}">
         <label>Advanced Broker Rel. (0-5)</label><input id="cfg-abr" type="number" min="0" max="5" step="1" value="${cfg.advanced_broker_relations||0}">
         <label>Accounting (0-5)</label><input id="cfg-acc" type="number" min="0" max="5" step="1" value="${cfg.accounting||0}">
-        <label>Standing Caldari State (brut)</label><input id="cfg-cs" type="number" step="0.01" value="${st['Caldari State']||0}">
-        <label>Standing Caldari Navy (brut)</label><input id="cfg-cn" type="number" step="0.01" value="${st['Caldari Navy']||0}">
+        ${stRows}
         <label>Upwell owner fee %</label><input id="cfg-up" type="number" step="0.01" min="0" value="${cfg.upwell_owner_fee||0}">
       </div>
-      <div class="cfg-note">Station defaut : Jita IV-4 (Caldari). Pour les citadelles, renseigne
-        l'Upwell owner fee. Les standings modifies (Connections/Diplomacy) ne comptent PAS.</div>
+      <div class="cfg-note">Stations : recherche par nom (ESI) ou colle directement l'ID. Citadelle non-résolue = ID brut (filtrable). Marge calculée achat@BUY / vente@SELL.</div>
       <div class="margin-actions">
+        <button class="btn small" onclick="if(api.fetch_esi_config){const r=api.fetch_esi_config();openMarginCfg();}">Auto ESI</button>
         <button class="btn small" onclick="showMargin(window.__lastMargin)">Retour</button>
         <button class="btn primary" onclick="saveMarginCfg()">Sauver</button>
       </div>`;
   }
+  function _esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+  function stationSearch(which) {
+    const api = getApi(); if (!api || !api.search_station) return;
+    const q = document.getElementById(which === 'buy' ? 'cfg-buy' : 'cfg-sell').value.trim();
+    const box = document.getElementById(which + '-results');
+    if (q.length < 2) { box.innerHTML = ''; return; }
+    // accept direct ID
+    if (/^\d{4,}$/.test(q)) { selectStation(which, parseInt(q), q); box.innerHTML=''; return; }
+    const res = api.search_station(q) || [];
+    box.innerHTML = res.map(r => `<div class="station-opt" onclick="selectStation('${which}',${r.id},'${_esc(r.name)}')">${_esc(r.name)} <span class="dim">${r.category} #${r.id}</span></div>`).join('') || '<div class="dim">aucun résultat</div>';
+  }
+  function selectStation(which, id, name) {
+    const inp = document.getElementById(which === 'buy' ? 'cfg-buy' : 'cfg-sell');
+    inp.value = name + ' (' + id + ')';
+    inp.dataset.stid = id;
+    document.getElementById(which + '-results').innerHTML = '';
+  }
+  function _stationIdFromInput(which) {
+    const inp = document.getElementById(which === 'buy' ? 'cfg-buy' : 'cfg-sell');
+    if (inp.dataset.stid) return parseInt(inp.dataset.stid);
+    const m = (inp.value||'').match(/\((\d+)\)\s*$/);
+    if (m) return parseInt(m[1]);
+    const d = (inp.value||'').match(/^\d+$/);
+    if (d) return parseInt(d[0]);
+    return 0;
+  }
   function saveMarginCfg() {
     const api = getApi(); if (!api || !api.save_broker_config) return;
+    const stObj = {};
+    const keys = Object.keys((api.get_broker_config ? api.get_broker_config() : {}).standings || {});
+    for (const k of keys) {
+      const el = document.getElementById('cfg-st-' + k);
+      if (el) stObj[k] = parseFloat(el.value) || 0;
+    }
     const cfg = {
       broker_relations: parseInt(document.getElementById('cfg-br').value)||0,
       advanced_broker_relations: parseInt(document.getElementById('cfg-abr').value)||0,
       accounting: parseInt(document.getElementById('cfg-acc').value)||0,
-      standings: {
-        "Caldari State": parseFloat(document.getElementById('cfg-cs').value)||0,
-        "Caldari Navy": parseFloat(document.getElementById('cfg-cn').value)||0
-      },
+      standings: stObj,
       upwell_owner_fee: parseFloat(document.getElementById('cfg-up').value)||0
     };
     api.save_broker_config(JSON.stringify(cfg));
-    logLine('Config frais de trade sauvegardee (Obsidian)', 'import');
-    // recharge la marge avec la nouvelle config
+    // stations BUY/SELL (nouveau)
+    if (api.save_station_config) {
+      api.save_station_config(JSON.stringify({
+        buy_station: _stationIdFromInput('buy'),
+        sell_station: _stationIdFromInput('sell')
+      }));
+    }
+    logLine('Config frais + stations sauvegardee', 'import');
     if (window.__lastBookPath && api.margin_from_book) api.margin_from_book(window.__lastBookPath);
     else closeMargin();
   }

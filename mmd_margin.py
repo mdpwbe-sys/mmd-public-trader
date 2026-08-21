@@ -20,6 +20,31 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "broker_config.json")
 OBSIDIAN_NOTE = r"G:/HERMES_MEMORIES/HERMES_MERMORIES/EVE/EVE-Broker-Fees.md"
 
+# cache des labels faction/corp (ESI universe/names, anonyme)
+_LABEL_CACHE = {}
+
+
+def _label_for_id(faction_or_corp_id):
+    """Nom lisible d'une faction/corp depuis ESI /universe/names/ (anonyme, pas de scope)."""
+    fid = int(faction_or_corp_id or 0)
+    if not fid:
+        return None
+    if fid in _LABEL_CACHE:
+        return _LABEL_CACHE[fid]
+    try:
+        import urllib.request, urllib.error, json as _json
+        url = "https://esi.evetech.net/v3/universe/names/?datasource=tranquility"
+        req = urllib.request.Request(url, data=_json.dumps([fid]).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = _json.loads(r.read().decode("utf-8"))
+        name = data[0]["name"] if data else None
+        _LABEL_CACHE[fid] = name
+        return name
+    except Exception:
+        _LABEL_CACHE[fid] = None
+        return None
+
 # ---- constantes CCP (2026) ----
 NPC_BASE_BROKER_RATE = Decimal("0.03")
 BROKER_RELATIONS_REDUCTION = Decimal("0.003")      # par niveau BR
@@ -45,9 +70,10 @@ DEFAULT_CONFIG = {
     "broker_relations": 0,
     "advanced_broker_relations": 0,
     "accounting": 0,
-    "standings": {"Caldari State": 0.0, "Caldari Navy": 0.0},
+    "standings": {},   # mapping dynamique faction/corp -> standing brut (rempli par fetch_esi_config)
     "upwell_owner_fee": 0.0,
-    "default_station": 60003760,
+    "buy_station": 0,   # 0 = auto-deduit des ordres (station la plus frequente cote BUY)
+    "sell_station": 0,  # 0 = auto-deduit des ordres (station la plus frequente cote SELL)
     "item_tax": 0.0,   # taxe specific item (0 par defaut)
 }
 
@@ -258,23 +284,24 @@ def compute_margin(rows, cfg, station_pref=None, order_station_id=None):
     # Determiner la station cible de VENTE
     available_stations = set(r["station_id"] for r in rows if r.get("station_id"))
     target_station = None
-    if station_pref and station_pref in available_stations:
-        target_station = station_pref
-    elif 60003760 in available_stations:
-        target_station = 60003760
-    elif cfg.get("default_station") in available_stations:
-        target_station = cfg.get("default_station")
-    else:
+    sell_cfg = cfg.get("sell_station") or 0
+    buy_cfg = cfg.get("buy_station") or 0
+    if sell_cfg and sell_cfg in available_stations:
+        target_station = sell_cfg
+    elif available_stations:
+        # fallback : station majoritaire parmi les SELL du livre
         st_counts = {}
         for r in rows:
-            st = r.get("station_id")
-            if st:
-                st_counts[st] = st_counts.get(st, 0) + 1
+            if r.get("side") == 1:
+                st = r.get("station_id")
+                if st:
+                    st_counts[st] = st_counts.get(st, 0) + 1
         if st_counts:
             target_station = max(st_counts, key=st_counts.get)
 
     # Station d'ACHAT = la ou est l'ordre (prioritaire), sinon station cible de vente
-    buy_station = order_station_id if (order_station_id and order_station_id in available_stations) else target_station
+    buy_station = (buy_cfg if (buy_cfg and buy_cfg in available_stations) else
+                   (order_station_id if (order_station_id and order_station_id in available_stations) else target_station))
 
     # Filtrer les SELL sur la station cible de vente; les BUY sur la station d'achat
     sell_rows = [r for r in rows if r.get("station_id") == target_station] if target_station else rows
@@ -444,25 +471,35 @@ def fetch_esi_config():
         if s.get("skill_id") in SKILL:
             levels[SKILL[s["skill_id"]]] = int(s.get("active_skill_level", 0))
 
-    # standings : Caldari State (faction 500001), Caldari Navy (corp 10000067)
-    CALDARI_STATE = 500001
-    CALDARI_NAVY = 10000067
+    # standings : deduire la faction/corp depuis la station BUY/SELL selectionnee
+    # (et non plus Caldari en dur). La faction d'une station NPC se determine
+    # via son systeme -> constellation -> factionID (SDE).
+    try:
+        import mmd_stations as stt
+        sel = cfg.get("sell_station") or cfg.get("buy_station") or 0
+        fac_id = stt.faction_for_station(sel) if sel else None
+    except Exception:
+        fac_id = None
+    fac_ids = [fac_id] if fac_id else [500001]  # 500001 = Caldari State (defaut historique)
+    corp_ids = []  # corporations proprietaires des stations selectionnees
+
     standing_map = {}
     for e in st:
         fid = int(e.get("from_id", 0))
-        if fid == CALDARI_STATE:
-            standing_map["Caldari State"] = float(e.get("standing", 0.0))
-        elif fid == CALDARI_NAVY:
-            standing_map["Caldari Navy"] = float(e.get("standing", 0.0))
+        if fid in fac_ids or fid in corp_ids:
+            # nom lisible de la faction/corp pour le mapping standings
+            label = _label_for_id(fid)
+            if label:
+                standing_map[label] = float(e.get("standing", 0.0))
 
     cfg = load_config()
     cfg["broker_relations"] = levels.get("broker_relations", cfg.get("broker_relations", 0))
     cfg["advanced_broker_relations"] = levels.get("advanced_broker_relations", cfg.get("advanced_broker_relations", 0))
     cfg["accounting"] = levels.get("accounting", cfg.get("accounting", 0))
-    if "Caldari State" in standing_map:
-        cfg.setdefault("standings", {})["Caldari State"] = standing_map["Caldari State"]
-    if "Caldari Navy" in standing_map:
-        cfg.setdefault("standings", {})["Caldari Navy"] = standing_map["Caldari Navy"]
+    # standings dynamiques (faction/corp deduit de la station selectionnee)
+    if standing_map:
+        cfg["standings"] = dict(cfg.get("standings", {}))
+        cfg["standings"].update(standing_map)
     # --- persiste dans SQLite (source de verite), standings BRUTS uniquement ---
     # Echec DB -> ignore (le JSON broker_config reste la fallback), ne casse pas
     # le retour de la config.
@@ -473,10 +510,10 @@ def fetch_esi_config():
             broker_relations=levels.get("broker_relations", 0),
             adv_broker=levels.get("advanced_broker_relations", 0),
             accounting=levels.get("accounting", 0),
-            faction_standing_raw=standing_map.get("Caldari State", 0.0),
-            corp_standing_raw=standing_map.get("Caldari Navy", 0.0),
-            faction_id=500001,            # Caldari State
-            npc_corp_id=10000067,         # Caldari Navy
+            faction_standing_raw=standing_map.get(next(iter(standing_map), ""), 0.0),
+            corp_standing_raw=0.0,
+            faction_id=fac_id if fac_id else 500001,
+            npc_corp_id=0,
         )
     except Exception:
         pass

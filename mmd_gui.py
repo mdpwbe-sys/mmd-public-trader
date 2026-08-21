@@ -1365,6 +1365,64 @@ class Api:
                 WIN.evaluate_js(f"logLine('Auto-config ESI echouee: {e}', 'err')")
             return {"ok": False, "error": str(e)}
 
+    def get_station_config(self):
+        """Retourne la paire BUY/SELL station configuree (+ labels resolus)."""
+        import mmd_margin as m
+        import mmd_stations as stt
+        cfg = m.load_config()
+        buy = cfg.get("buy_station") or 0
+        sell = cfg.get("sell_station") or 0
+        return {
+            "buy_station": buy,
+            "sell_station": sell,
+            "buy_label": stt.resolve_name(buy) if buy else "",
+            "sell_label": stt.resolve_name(sell) if sell else "",
+        }
+
+    def save_station_config(self, payload):
+        """Persiste la paire BUY/SELL station (JSON broker_config)."""
+        import mmd_margin as m
+        try:
+            payload = json.loads(payload) if isinstance(payload, str) else payload
+        except Exception:
+            payload = {}
+        cfg = m.load_config()
+        cfg["buy_station"] = int(payload.get("buy_station") or 0)
+        cfg["sell_station"] = int(payload.get("sell_station") or 0)
+        m.save_config(cfg)
+        return self.get_station_config()
+
+    def search_station(self, query):
+        """Recherche station/citadelle par nom via ESI /universe/ids (anonyme).
+        Retourne [{id, name, category}] trie par pertinence."""
+        import urllib.request, urllib.error, json as _json
+        q = (query or "").strip()
+        if len(q) < 2:
+            return []
+        try:
+            url = "https://esi.evetech.net/v2/universe/ids/?datasource=tranquility"
+            req = urllib.request.Request(url, data=_json.dumps([q]).encode(),
+                                         headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                data = _json.loads(r.read().decode("utf-8"))
+            out = []
+            for cat in ("stations", "structures"):
+                for e in data.get(cat, []):
+                    out.append({"id": int(e["id"]), "name": e["name"], "category": cat[:-1]})
+            return out[:20]
+        except Exception:
+            return []
+
+    def resolve_station(self, station_id):
+        """Resout un location_id en (name, systeme, region) via SDE locale."""
+        import mmd_stations as stt
+        try:
+            sid = int(station_id)
+        except (ValueError, TypeError):
+            return {"id": station_id, "name": str(station_id), "system": None, "region": None}
+        sysid, reg, name = stt.resolve(sid)
+        return {"id": sid, "name": name, "system": sysid, "region": reg}
+
     def margin_from_book(self, path, order_station_id=None):
         """Calcule la marge nette d'un livre public 'The Forge-<item>*.txt'
         et pousse le popup showMargin au JS.
@@ -1375,8 +1433,9 @@ class Api:
         try:
             rows, tid, name = m.parse_market_book(path)
             cfg = m.load_config()
-            res = m.compute_margin(rows, cfg, station_pref=cfg.get("default_station"),
-                                   order_station_id=order_station_id)
+            res = m.compute_margin(rows, cfg,
+                                   station_pref=cfg.get("sell_station") or None,
+                                   order_station_id=cfg.get("buy_station") or order_station_id)
             res["item_name"] = name
             res["type_id"] = tid
             res["source_file"] = os.path.basename(path)
