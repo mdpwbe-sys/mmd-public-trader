@@ -1,0 +1,179 @@
+{
+  "source": "historical_market_daily region 10000002 (The Forge) daily",
+  "span": "2022-04-03..2026-08-09 (~4.3y)",
+  "method": "buy_max=AVG(low_cents); sell_min=AVG(avg_cents); sell_ideal=MAX(high_cents)",
+  "total_calendar_days": 1587,
+  "computed": [
+    {
+      "name": "Gotan's Modified Cruise Missile Launcher",
+      "meta": 6,
+      "type_id": 14520,
+      "buy_max_B": 2.075,
+      "sell_min_B": 2.15,
+      "sell_ideal_B": 3.3,
+      "samples_days": 6,
+      "span": "2025-07-21..2026-08-04"
+    },
+    {
+      "name": "Gotan's Modified Torpedo Launcher",
+      "meta": 6,
+      "type_id": 14526,
+      "buy_max_B": 2.29,
+      "sell_min_B": 2.294,
+      "sell_ideal_B": 4.7,
+      "samples_days": 25,
+      "span": "2022-07-09..2026-07-05"
+    },
+    {
+      "name": "Hakim's Modified Cruise Missile Launcher",
+      "meta": 7,
+      "type_id": 14518,
+      "buy_max_B": 0.997,
+      "sell_min_B": 1.023,
+      "sell_ideal_B": 2.79,
+      "samples_days": 46,
+      "span": "2022-05-24..2026-07-15"
+    },
+    {
+      "name": "Hakim's Modified Torpedo Launcher",
+      "meta": 7,
+      "type_id": 14525,
+      "buy_max_B": 0.911,
+      "sell_min_B": 0.941,
+      "sell_ideal_B": 2.48,
+      "samples_days": 57,
+      "span": "2022-05-09..2026-04-02"
+    },
+    {
+      "name": "Mizuro's Modified Torpedo Launcher",
+      "meta": 8,
+      "type_id": 14524,
+      "buy_max_B": 0.965,
+      "sell_min_B": 1.012,
+      "sell_ideal_B": 4.0,
+      "samples_days": 66,
+      "span": "2022-08-05..2026-07-10"
+    },
+    {
+      "name": "Tobias' Modified Torpedo Launcher",
+      "meta": 4,
+      "type_id": 14527,
+      "buy_max_B": 6.021,
+      "sell_min_B": 6.486,
+      "sell_ideal_B": 12.8,
+      "samples_days": 14,
+      "span": "2022-05-29..2026-07-20"
+    },
+    {
+      "name": "Vepas' Modified Torpedo Launcher",
+      "meta": 2,
+      "type_id": 14682,
+      "buy_max_B": 3.992,
+      "sell_min_B": 4.049,
+      "sell_ideal_B": 7.5,
+      "samples_days": 25,
+      "span": "2025-07-11..2026-07-27"
+    },
+    {
+      "name": "Estamel's Modified Cruise Missile Launcher",
+      "meta": 1,
+      "type_id": 14678,
+      "buy_max_B": 14.384,
+      "sell_min_B": 14.868,
+      "sell_ideal_B": 21.84,
+      "samples_days": 21,
+      "span": "2025-07-01..2026-07-22",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Estamel's Modified Torpedo Launcher",
+      "meta": 1,
+      "type_id": 14683,
+      "buy_max_B": 10.866,
+      "sell_min_B": 10.994,
+      "sell_ideal_B": 14.5,
+      "samples_days": 17,
+      "span": "2025-08-16..2026-07-31",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Kaikka's Modified Cruise Missile Launcher",
+      "meta": 5,
+      "type_id": 14672,
+      "buy_max_B": 1.33,
+      "sell_min_B": 1.362,
+      "sell_ideal_B": 3.15,
+      "samples_days": 32,
+      "span": "2025-07-11..2026-08-06",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Kaikka's Modified Torpedo Launcher",
+      "meta": 5,
+      "type_id": 14680,
+      "buy_max_B": 1.56,
+      "sell_min_B": 1.578,
+      "sell_ideal_B": 3.45,
+      "samples_days": 35,
+      "span": "2025-08-23..2026-07-24",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Mizuro's Modified Cruise Missile Launcher",
+      "meta": 8,
+      "type_id": 14516,
+      "buy_max_B": 0.639,
+      "sell_min_B": 0.712,
+      "sell_ideal_B": 1.899,
+      "samples_days": 12,
+      "span": "2025-07-12..2026-06-13",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Thon's Modified Cruise Missile Launcher",
+      "meta": 3,
+      "type_id": 14674,
+      "buy_max_B": 2.412,
+      "sell_min_B": 2.449,
+      "sell_ideal_B": 3.62,
+      "samples_days": 32,
+      "span": "2025-07-11..2026-08-06",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Thon's Modified Torpedo Launcher",
+      "meta": 3,
+      "type_id": 14681,
+      "buy_max_B": 3.196,
+      "sell_min_B": 3.288,
+      "sell_ideal_B": 4.994,
+      "samples_days": 14,
+      "span": "2025-07-27..2026-06-25",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Tobias' Modified Cruise Missile Launcher",
+      "meta": 4,
+      "type_id": 14522,
+      "buy_max_B": 4.798,
+      "sell_min_B": 4.803,
+      "sell_ideal_B": 6.894,
+      "samples_days": 5,
+      "span": "2025-09-26..2025-12-03",
+      "source": "ESI_history"
+    },
+    {
+      "name": "Vepas' Modified Cruise Missile Launcher",
+      "meta": 2,
+      "type_id": 14676,
+      "buy_max_B": 5.411,
+      "sell_min_B": 5.444,
+      "sell_ideal_B": 6.5,
+      "samples_days": 20,
+      "span": "2025-07-03..2026-08-02",
+      "source": "ESI_history"
+    }
+  ],
+  "missing_0row": [],
+  "esi_pull_done": "2026-08-11T10:27:13.440375"
+}

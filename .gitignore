@@ -1,0 +1,69 @@
+# Secrets et environnement local
+.env*
+!.env.example
+*.secret
+.env.cache
+
+# Bases et donnees operationnelles locales
+*.db
+*.db-wal
+*.db-shm
+.esi_cache.json
+*.cache
+last_scan_cache.json
+sparklines_cache.json
+sparklines_cache.json.tmp
+character_snapshots.json
+broker_config.json
+*.migrated.bak
+*.corrupt.bak
+.json_migrated.flag
+_migration_backup/
+
+# Etat d'execution et caches applicatifs
+.running.lock
+.running.meta.json
+.webview_data/
+*.log
+*.tmp
+watch_debug.log
+dialog_debug.log
+mmd_gui.log
+mmd_check.pyc
+
+# Python et dependances locales
+__pycache__/
+*.pyc
+node_modules/
+
+# Distributions et ressources generees/non sources
+bin/
+Images/
+Memorie/
+backups/
+scratch/
+installer*
+maintenancetool*
+*.dat
+*.ini
+components.xml
+network.xml
+InstallationLog.txt
+
+# Artefacts de travail et de previsualisation
+PROMPT_*.md
+gui/preview.*
+gui/test_sso.png
+render_log_test.js
+dup_orders.txt
+nul
+
+# Logs EVE hors projet (donnees personnelles)
+Documents/
+
+# --- public/deployable exclusions ---
+reference/sde/types.json
+downloads/
+*.secret
+.env*
+!.env.example
