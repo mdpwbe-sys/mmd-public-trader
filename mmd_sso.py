@@ -332,6 +332,11 @@ def _consume_oauth_session(received_state):
 def get_login_url():
     cfg = _load_env()
     cid = cfg.get("CLIENT_ID", "")
+    if not cid:
+        raise RuntimeError(
+            "CLIENT_ID manquant. Copie .env.example -> .env et renseigne "
+            "CLIENT_ID / CLIENT_SECRET depuis https://developers.eveonline.com "
+            "(cree une application, callback http://127.0.0.1:8765/callback).")
     state, challenge, cb = _new_oauth_session()
     params = {
         "response_type": "code",
@@ -544,8 +549,12 @@ def start_login_server():
     cb = _callback_url()
     port = int(urllib.parse.urlparse(cb).port or 8765)
     _login_result.clear()
+    try:
+        auth_url = get_login_url()
+    except RuntimeError as e:
+        # pas de CLIENT_ID configure -> on n'ouvre PAS d'URL morte
+        return False, str(e)
     _server = HTTPServer(("127.0.0.1", port), _Handler)
-    auth_url = get_login_url()
     import webbrowser
     webbrowser.open(auth_url)
     _server.serve_forever()
