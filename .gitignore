@@ -67,3 +67,11 @@ downloads/
 *.secret
 .env*
 !.env.example
+
+# local run artifacts (never ship)
+boot_err.txt
+boot_stderr.txt
+*.log
+app_data.db
+app_data.db-wal
+app_data.db-shm

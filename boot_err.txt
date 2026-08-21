@@ -1,1 +1,0 @@
-[pywebview] Failed to delete user data folder: [WinError 2] The system cannot find the file specified: 'C:\\Users\\Admin\\AppData\\Local\\Temp\\tmpdvcng3og'
