@@ -36,7 +36,7 @@ class RefreshImportRegressionTests(unittest.TestCase):
             disk, refreshed, imported_at="2026-08-09T06:00:00")
 
         imported = _visible_order(1, names[1], "new")
-        imported["order_id"] = "imported-zylnarius"
+        imported["order_id"] = "imported-CHARACTER_THREE"
         imported["price"] = imp.prx.from_cents(imported["price_cents"])
         snapshots[1] = {
             "character_id": 1, "character_name": names[1],
@@ -49,7 +49,7 @@ class RefreshImportRegressionTests(unittest.TestCase):
         self.assertEqual({o["char_id"] for o in payload["orders_full"]}, {1, 2, 3})
         self.assertEqual(
             {o["order_id"] for o in payload["orders_full"]},
-            {"imported-zylnarius", "refresh-2", "refresh-3"})
+            {"imported-CHARACTER_THREE", "refresh-2", "refresh-3"})
 
 
 @unittest.skipIf(gui is None, "pywebview absent de cet environnement")
@@ -87,7 +87,7 @@ class NativeHotkeyDispatchTests(unittest.TestCase):
         }
         refreshed = [_visible_order(cid, name, str(cid)) for cid, name in names.items()]
         imported = _visible_order(1, names[1], "new")
-        imported["order_id"] = "imported-zylnarius"
+        imported["order_id"] = "imported-CHARACTER_THREE"
         imported["price"] = imp.prx.from_cents(imported["price_cents"])
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -111,7 +111,7 @@ class NativeHotkeyDispatchTests(unittest.TestCase):
             self.assertEqual({o["char_id"] for o in api._last_orders}, {1, 2, 3})
             self.assertEqual(
                 {o["order_id"] for o in api._last_orders},
-                {"imported-zylnarius", "refresh-2", "refresh-3"})
+                {"imported-CHARACTER_THREE", "refresh-2", "refresh-3"})
             with open(snap_path, encoding="utf-8") as stream:
                 persisted = json.load(stream)
             self.assertEqual(set(persisted), {"1", "2", "3"})

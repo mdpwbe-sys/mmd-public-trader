@@ -32,7 +32,7 @@ def open_mmd():
 def main():
     if open_mmd():
         print("=" * 72)
-        print("  EVERNUS DASHBOARD - doublons + ordres a mettre a jour")
+        print("  MMD DASHBOARD - doublons + ordres a mettre a jour")
         print("=" * 72)
         print("  Mmd lance. Dans la fenetre:")
         print("   1) 'Import all' (3 persos)  + coche 'Show for all characters'")

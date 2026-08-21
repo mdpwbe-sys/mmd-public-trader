@@ -66,7 +66,7 @@ def main():
 
     lines = []
     lines.append("=" * 70)
-    lines.append("  EVERNUS - DOUBLONS INTER-PERSONNAGES")
+    lines.append("  MMD - DOUBLONS INTER-PERSONNAGES")
     lines.append("  (meme item + meme station + meme prix, >= 2 persos)")
     lines.append("=" * 70)
     lines.append(f"  Personnages connus: {', '.join(names.values()) if names else 'inconnus'}")

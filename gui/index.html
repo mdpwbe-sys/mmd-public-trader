@@ -84,7 +84,7 @@
   .dup-img-fallback .fallback-txt { font-size: 9.5px; font-weight: 800; color: var(--orange-soft); letter-spacing: 0.4px; text-transform: uppercase; }
   .dup-leds { display: flex; gap: 3px; justify-content: center; align-items: center; margin-top: 1px; }
   .led { width: 6px; height: 6px; border-radius: 1.5px; display: inline-block; }
-  .led.zylnarius { background: #2ee6e6; box-shadow: 0 0 6px #2ee6e6; }
+  .led.CHARACTER_THREE { background: #2ee6e6; box-shadow: 0 0 6px #2ee6e6; }
   .led.mike { background: #ff9a4d; box-shadow: 0 0 6px #ff9a4d; }
   .led.sylnae { background: #b450ff; box-shadow: 0 0 6px #b450ff; }
   .led.other { background: #3ddc84; box-shadow: 0 0 6px #3ddc84; }
@@ -748,7 +748,7 @@
     const norm = String(name).trim().toLowerCase();
 
     // Persos principaux identifiés
-    if (norm.includes('zylnarius')) return DYNAMIC_PALETTE[0];
+    if (norm.includes('CHARACTER_THREE')) return DYNAMIC_PALETTE[0];
     if (norm.includes('mike')) return DYNAMIC_PALETTE[1];
     if (norm.includes('sylnae')) return DYNAMIC_PALETTE[2];
     if (norm.includes('kresner')) return DYNAMIC_PALETTE[3];
@@ -786,7 +786,7 @@
   function getCharLedClass(name) {
     if (!name) return 'other';
     const n = name.toLowerCase().trim();
-    if (n.includes('zylnarius')) return 'zylnarius';
+    if (n.includes('CHARACTER_THREE')) return 'CHARACTER_THREE';
     if (n.includes('mike')) return 'mike';
     if (n.includes('sylnae')) return 'sylnae';
     return 'other';

@@ -14,5 +14,5 @@ Sans ce fichier, la résolution noms->type_id échoue (le reste fonctionne).
 
 ## Neutralité
 Ce dépôt est volontairement neutre : aucune référence à des comptes/personnages,
-ni aux noms de code historiques (Evernus / Elinor). Les modules `evernus_*` ont été
+ni aux noms de code historiques (Mmd / Elinor). Les modules `mmd_*` ont été
 renommés `mmd_*`.
