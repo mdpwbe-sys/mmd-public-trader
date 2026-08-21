@@ -8,6 +8,7 @@ Pont natif vers mmd_core.scan() (fetch ESI public direct, parallele, thread-safe
 import os, subprocess, sys, json, threading, time
 import webview
 import mmd_core as core
+import migrations
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI_DIR = os.path.join(HERE, "gui")
@@ -1559,6 +1560,14 @@ def main():
     threading.Thread(target=_heartbeat_loop, args=(meta_path,), daemon=True).start()
 
     api = Api()
+    # Cold-start: assure le schema (CREATE TABLE IF NOT EXISTS) avant que
+    # l'UI ne lise quoi que ce soit. Sans ca, 1er lancement crash (tables
+    # lues avant leur 1re creation paresseuse), 2e lancement OK (tables
+    # deja la). migrate() est idempotent et ne casse rien si deja present.
+    try:
+        migrations.migrate()
+    except Exception:
+        pass
     # user-data-dir unique par PID pour eviter le conflit de dossier pywebview
     # (le msg 'Failed to delete user data folder' vient de 2 instances qui se
     # marchent dessus sur le meme dossier). On force WebView2 (edgechromium).

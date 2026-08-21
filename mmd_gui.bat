@@ -9,5 +9,6 @@ SET PY=%LOCALAPPDATA%\Python\pythoncore-3.14-64\python.exe
 IF NOT EXIST "%PY%" SET PY=C:\Users\Admin\AppData\Local\Programs\Python\Python311\python.exe
 IF NOT EXIST "%PY%" SET PY=python
 cd /d "%~dp0"
-"%PY%" mmd_gui.py
+"%PY%" mmd_gui.py 2> boot_err.txt
+if exist boot_err.txt if %errorlevel% neq 0 echo [CRASH] voir boot_err.txt
 pause
