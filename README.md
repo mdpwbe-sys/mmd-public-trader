@@ -26,6 +26,8 @@ This is the **universal trader** build: any region, any station, any citadel —
 - **📊 Net Margin & Bulk Batch Engine**: Real-time net profit popover with exact CCP broker fees, accounting taxes, structural station ID matching, and Bulk Batch Volume Scaling for commodities like Tritanium.
 - **🏪 Configurable BUY / SELL Stations**: Pick your own BUY station and SELL station per trade (UI picker + direct ID). Faction standing fees resolved dynamically from the selected station — no hardcoded hub.
 - **🛰️ Citadel-Aware**: Recognizes Upwell structures. Unresolved citadels (not owned by your corp) show their raw ID and remain filterable — never a crash.
+- **🐕 Marketlogs Watchdog**: Watches your EVE `Marketlogs` folder and auto-imports new character/corporation order exports the moment EVE writes them — no manual refresh needed.
+- **⚡ Fast Copy Price**: A system-wide hotkey (Win + F by default) copies the new price of the selected order straight to your clipboard in EVE's decimal format, ready to paste into the client.
 - **🔒 Mono-Instance Lock & Heartbeat**: Robust process locking preventing zombie locks and startup collisions on Windows.
 - **💾 SQLite WAL Engine (Zero Data Loss)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions and automatic backoff retries.
 - **📓 Obsidian Vault Mirroring**: Non-blocking Markdown trade journals to your Obsidian vault.
@@ -40,7 +42,7 @@ This is the **universal trader** build: any region, any station, any citadel —
 
 ```bash
 git clone https://github.com/mdpwbe-sys/mmd-public-trader.git
-cd mmd
+cd mmd-public-trader
 pip install -r requirements.txt
 python mmd_gui.py
 # or double-click mmd_gui.bat
@@ -55,10 +57,10 @@ A single `.exe` with everything bundled. No Python install required.
    build_exe.bat
    ```
    → produces `dist/MMD-Trader.exe`.
-2. **First launch wizard**: the app opens a "1er lancement — configuration EVE" panel.
+2. **First launch wizard**: the app opens a "First launch — EVE configuration" panel.
    Paste **your own** `CLIENT_ID` / `CLIENT_SECRET` (from your CCP developer application).
    The exe ships **no secrets** — each user supplies their own credentials.
-3. Click **Sauver & Connecter EVE** → authorizes via CCP → the app populates.
+3. Click **Save & Connect EVE** → authorizes via CCP → the app populates.
 
 Persistent data (DB, `.env`, logs) lives in `%APPDATA%/MMD-Trader` — so it survives restarts and isn't lost in the temp extraction folder.
 
@@ -94,6 +96,47 @@ Unlike the original Mmd (Jita/Perimeter only), this build is hub-agnostic:
 - **Dynamic faction fees**: broker rate + standing discount are computed from the *selected* station's faction (via SDE), not hardcoded to Caldari.
 - **Citadels**: corp-owned structures resolve their name automatically; foreign citadels display their raw `location_id` and stay filterable.
 - **Region/station filter**: discoveries from your corporation orders populate the display filter automatically.
+
+---
+
+## 📖 User Guide — How to use the app
+
+### 1. Connect your characters (SSO)
+- Click **Connect EVE** (or the SSO button). Your browser opens CCP's login.
+- Authorize each character you want to track (up to 4+). Each appears with its own LED color in the UI.
+- The app pulls your **personal orders**, **corporation orders**, standings, and wallet automatically via ESI.
+
+### 2. Dashboard — "Orders to Update"
+- The **Dashboard** tab shows, per character/filter, the count of orders that need repricing or action.
+- **Sparkline**: a small trend graph per filter showing how that count evolved over time (no jump glitches on refresh).
+- **Duplicates between characters**: a gallery of items you're selling on multiple alts at competing prices, with color-coded LEDs so you spot self-undercuts instantly.
+
+### 3. FIFO & competition analysis
+- The app computes your position in the **FIFO queue** for each order vs competitors and vs your own alts.
+- Outbid orders and undercuts are flagged live — you see exactly which orders to fix and by how much.
+
+### 4. Net Margin & price check
+- Select an item → a popover shows **net profit** after exact **CCP broker fees + accounting tax**, computed for your configured BUY/SELL stations.
+- **Bulk Batch scaling**: for commodities (e.g. Tritanium), it scales the margin across the full volume you intend to move.
+
+### 5. Fast Copy Price (hotkey)
+- Select an order in the list, then press the global hotkey (**Win + F** by default).
+- The app copies the **new recommended price** to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste directly into the EVE client's price field.
+- Works system-wide (even when the app window is not focused) — *as long as only one instance is running*.
+
+### 6. Marketlogs Watchdog (auto-import)
+- The **watchdog** monitors your EVE `Documents/EVE/logs/Marketlogs` folder.
+- The moment EVE writes a new `My Orders-*.txt` or corporation export, the app imports it automatically — no manual "Refresh" needed.
+- Note: `Corporation Orders-*.txt` exports are **excluded** (EVE truncates them); use the ESI corporation-orders pull for those.
+
+### 7. Fees & station configuration
+- **Settings → Margin panel**: set your **BUY station** and **SELL station** (search by name or paste the station/citadel ID).
+- Broker fee and standing discount are derived from the **selected station's faction** (via the bundled SDE) — no manual rate entry required.
+- Foreign citadels you don't own show their raw `location_id`; you can still filter and trade against them.
+
+### 8. Export & history
+- **Price history**: 5-year daily history per item (from the bundled reference data / ESI).
+- **Export**: push order updates back via ESI, or export item details (potential gain, fees, breakdown) — the "Elinor/Evernus-style" deep dive, without those tools installed.
 
 ---
 
