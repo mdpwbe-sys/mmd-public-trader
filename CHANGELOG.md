@@ -15,7 +15,7 @@ est en [SemVer](https://semver.org/).
 ### Corrigé (neutralisation pour distribution publique)
 - Suppression de toute donnée personnelle du code (User-Agent, chemins `E:\EVE\...`, `%LOCALAPPDATA%\mmd.com\Mmd`, vault Obsidian).
 - Bases de données opérationnelles redirigées vers le répertoire d'état persistant (`%APPDATA%/MMD-Trader`) au lieu des chemins legacy.
-- `eve.db` (SDE) non embarqué : résolution des noms via ESI `/universe/names/` + ID brut, sans crash sur installation neuve.
+- `eve.db` (SDE 239 Mo) non embarqué : remplacé par un **SDE léger embarqué** (`reference/sde/sde_light.json`, ~0.6 Mo) généré du dump CCP — résolution station→système→région→faction hors-ligne, sans crash sur installation neuve.
 - Scopes CCP documentés alignés sur `mmd_sso.py` (assets, contracts, divisions, blueprints, etc.).
 - Promesses marketing tempérées (analyse concurrence ~5 min cache ESI, stockage WAL atomique, export = aide à l'action utilisateur).
 

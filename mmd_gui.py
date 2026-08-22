@@ -13,10 +13,12 @@ import migrations
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI_DIR = os.path.join(HERE, "gui")
 INDEX = os.path.join(GUI_DIR, "index.html")
-LOG_PATH = os.path.join(HERE, "mmd_history.log")
-MMD_EXE = core.EXE
-CACHE_PATH = os.path.join(HERE, "last_scan_cache.json")  # dernier payload persiste sur disque
-SPARKLINE_PATH = os.path.join(HERE, "sparklines_cache.json")
+from platform_state import state_path
+# Persistant state dir (%APPDATA%/MMD-Trader) — survives onefile _MEI temp extraction.
+LOG_PATH = state_path("mmd_history.log")
+CACHE_PATH = state_path("last_scan_cache.json")  # dernier payload persiste sur disque
+SPARKLINE_PATH = state_path("sparklines_cache.json")
+SNAP_PATH = state_path("character_snapshots.json")
 _CACHE_LOCK = threading.RLock()
 _SNAPSHOT_LOCK = threading.RLock()
 _SPARKLINE_LOCK = threading.RLock()
@@ -1103,7 +1105,7 @@ class Api:
         return None
 
     # ---- cache multi-persos (snapshots indexés par character_id) ----
-    SNAP_PATH = os.path.join(HERE, "character_snapshots.json")
+    # SNAP_PATH est defini au niveau module (state_path, persistant).
 
     def _load_snapshots(self):
         """Fusionne le disque avec la memoire sans supprimer un perso connu."""
@@ -1244,14 +1246,14 @@ class Api:
             result = win.create_file_dialog(webview.OPEN_DIALOG)
         except Exception as e:
             try:
-                with open(os.path.join(HERE, "dialog_debug.log"), "a", encoding="utf-8") as f:
+                with open(state_path("dialog_debug.log"), "a", encoding="utf-8") as f:
                     f.write(f"EXC: {e!r}\n")
             except Exception:
                 pass
             return ""
         # debug: log le retour brut pour comprendre le format
         try:
-            with open(os.path.join(HERE, "dialog_debug.log"), "a", encoding="utf-8") as f:
+            with open(state_path("dialog_debug.log"), "a", encoding="utf-8") as f:
                 f.write(f"RESULT type={type(result).__name__} val={result!r}\n")
         except Exception:
             pass
@@ -1632,8 +1634,8 @@ def main():
     #   meme instance + heartbeat recent -> vraie 2e instance -> refuser
     #   meme instance + heartbeat expire -> zombie -> tenter arret propre,
     #     puis supprimer le lock -> demarrer
-    lock_path = os.path.join(HERE, ".running.lock")
-    meta_path = os.path.join(HERE, ".running.meta.json")
+    lock_path = state_path(".running.lock")
+    meta_path = state_path(".running.meta.json")
     state = _owner_state(_read_meta(meta_path))
     if state == "alive":
         try:

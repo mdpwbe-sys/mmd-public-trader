@@ -16,10 +16,10 @@ import json
 import time
 import tempfile
 
-# Vault racine (TradingVault sous le vault Hermes existant)
+# Vault racine: configurable via env, defaut local (aucun chemin prive embarque).
 VAULT_ROOT = os.environ.get(
     "TRADING_VAULT",
-    r"G:\HERMES_MEMORIES\HERMES_MERMORIES\TradingVault")
+    os.path.join(os.path.expanduser("~"), "MMD-Trader", "TradingVault"))
 
 SUBDIRS = [
     "00_Inbox", "01_Dashboard", "10_Characters", "20_Items", "30_Locations",

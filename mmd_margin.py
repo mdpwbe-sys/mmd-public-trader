@@ -10,15 +10,13 @@ Le popup est declenche par l'export d'un item : 'The Forge-<item>*.txt'
 (c'est un LIVRE PUBLIC, pas un export d'ordres perso). On ne l'importe PAS
 comme des ordres -> on calcule la marge nette et on l'affiche.
 
-Config (standings/skills) lue depuis broker_config.json (source de verite)
-et mise en miroir dans la note Obsidian EVE/EVE-Broker-Fees.md.
+Config (standings/skills) lue depuis broker_config.json (source de verite).
 """
 from decimal import Decimal, getcontext
 import os, json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "broker_config.json")
-OBSIDIAN_NOTE = r"G:/HERMES_MEMORIES/HERMES_MERMORIES/EVE/EVE-Broker-Fees.md"
 
 # cache des labels faction/corp (ESI universe/names, anonyme)
 _LABEL_CACHE = {}
@@ -105,64 +103,9 @@ def save_config(cfg):
 
 
 def _write_obsidian_note(cfg):
-    """Miroir memoire Obsidian : formules + config courante du perso."""
-    st = cfg.get("standings", {})
-    cs = st.get("Caldari State", 0.0)
-    cn = st.get("Caldari Navy", 0.0)
-    rate = npc_broker_rate(cfg["broker_relations"], Decimal(str(cs)), Decimal(str(cn)))
-    tax = sales_tax_rate(cfg["accounting"])
-    note = f"""# EVE - Broker Fees & Sales Tax (config perso)
-
-> Source CCP (maj 2026-03-02) : Broker Fee and Sales Tax, Viridian (Upwell),
-> Grand Heist (Advanced Broker Relations 6%/niv, max 80% a V).
-
-## Config active (utilisee par le calcul de marge nette)
-
-| Parametre | Valeur | Effet |
-|-----------|--------|-------|
-| Broker Relations (BR) | {cfg['broker_relations']} | -{cfg['broker_relations']*0.3:.2f} pt |
-| Advanced Broker Relations (ABR) | {cfg['advanced_broker_relations']} | relist -{cfg['advanced_broker_relations']*6}% |
-| Accounting | {cfg['accounting']} | sales tax -{cfg['accounting']*11}% |
-| Standing Caldari State (brut) | {cs} | -{cs*0.03:.2f} pt |
-| Standing Caldari Navy (brut) | {cn} | -{cn*0.02:.2f} pt |
-| Upwell owner fee | {cfg['upwell_owner_fee']}% | SCC 0.5% + ca |
-| Station defaut | {cfg['default_station']} | Jita IV-4 (Caldari) |
-
-**Taux calcule (Jita, NPC) :** broker = {rate:.4f} | sales tax = {tax:.4f}
-
-## Formules (Decimal, jamais float)
-
-### Station NPC (Jita)
-```
-broker = max(1%, 3% - 0.3%*BR - 0.03%*faction - 0.02%*corp)
-sales_tax = 7.5% * (1 - 0.11*Accounting)
-```
-
-### Citadelle Upwell
-```
-broker = 0.5% (SCC) + owner_fee
-```
-
-### Relist (modif ordre)
-```
-RD = 50% + 6%*ABR   (max 80% a V)
-fee = max(100 ISK, max(0, BR*(P2-P1)) + (1-RD)*BR*P2)
-```
-
-## Marge nette (Mmd-style)
-- Prix achat = min(prix SELL public)
-- Prix vente = max(prix BUY public)
-- Vol tradable = min(vol du meilleur BUY, vol du meilleur SELL)
-- Frais/unit : broker achat (sur prix achat) + sales tax (sur prix vente)
-  + broker vente (sur prix vente)
-- Marge nette/unit = prix vente - prix achat - frais/unit
-"""
-    try:
-        os.makedirs(os.path.dirname(OBSIDIAN_NOTE), exist_ok=True)
-        with open(OBSIDIAN_NOTE, "w", encoding="utf-8") as f:
-            f.write(note)
-    except Exception:
-        pass
+    """Obsidian mirroring removed from the public build (no private vault path).
+    Kept as a no-op so callers don't need changing."""
+    return
 
 
 # ---- formules CCP (Decimal) ----
@@ -255,16 +198,9 @@ def parse_market_book(path):
 
 
 def _iname(tid):
-    try:
-        import sqlite3
-        con = sqlite3.connect(os.path.join(
-            os.environ.get("LOCALAPPDATA", ""), "mmd.com", "Mmd",
-            "resources", "eve.db"))
-        r = con.execute("SELECT typeName FROM invTypes WHERE typeID=?", (tid,)).fetchone()
-        con.close()
-        return r[0] if r else f"typeID {tid}"
-    except Exception:
-        return f"typeID {tid}"
+    # types.json (SDE 239M) is NOT bundled in the public exe. Item names
+    # fall back to their typeID unless resolved elsewhere (ESI/quickbar cache).
+    return f"typeID {tid}"
 
 
 # ---- calcul de marge nette ----
