@@ -238,7 +238,7 @@ def revoke_char(char_id):
 def disconnect_and_clear():
     """Supprime TOUTES les donnees SSO (tokens + refresh) du cache local.
     Force un re-consent complet au prochain login -> necessaire pour activer
-    un nouveau scope (ex: esi-markets.structures.v1 pour les citadelles)."""
+    un nouveau scope (ex: esi-universe.read_structures.v1 pour les citadelles)."""
     global _login_result
     try:
         if os.path.exists(CACHE):

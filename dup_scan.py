@@ -11,15 +11,17 @@ Usage :
   - double-clique dup_scan.bat  (ou: python dup_scan.py)
   - genere un rapport lisible + dup_orders.txt a cote.
 
-Chemins DB par defaut (Mmd Windows) :
-  main.db  -> %LOCALAPPDATA%/mmd.com/Mmd/db/main.db
-  eve.db   -> %LOCALAPPDATA%/mmd.com/Mmd/resources/eve.db
+Chemins DB par defaut :
+  main.db  -> %APPDATA%/MMD-Trader/app_data.db (etat persistant)
+  eve.db   -> non embarque (SDE pas inclus dans le build public)
 """
 import os, sqlite3, sys
+from platform_state import state_path
 
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
-EVE_DB  = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
+# Operational DB in persistent app state dir (APPDATA/MMD-Trader); not the
+# legacy %LOCALAPPDATA%/mmd.com/Mmd path. eve.db (SDE) is not bundled.
+MAIN_DB = state_path("app_data.db")
+EVE_DB = None
 
 def main():
     if not os.path.exists(MAIN_DB):
@@ -37,7 +39,7 @@ def main():
     except Exception:
         pass
 
-    eve_con = sqlite3.connect(EVE_DB) if os.path.exists(EVE_DB) else None
+    eve_con = sqlite3.connect(EVE_DB) if (EVE_DB and os.path.exists(EVE_DB)) else None
     ecur = eve_con.cursor() if eve_con else None
 
     def item_name(tid):

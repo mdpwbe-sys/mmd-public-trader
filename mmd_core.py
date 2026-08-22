@@ -18,18 +18,20 @@ d'ecrire dans la DB Mmd (database is locked) et pour rester rapide.
 import os, sqlite3, datetime
 from decimal import Decimal
 import mmd_price  # prix en Decimal/centiemes (jamais float)
+from platform_state import state_path
 
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
-EVE_DB  = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
-EXE     = r"E:\EVE\mmd\bin\Mmd.exe"
+# Operational DB lives in the persistent app state dir (APPDATA/MMD-Trader),
+# NOT the legacy %LOCALAPPDATA%/mmd.com/Mmd path. eve.db (SDE) is NOT bundled
+# in the public build; item-name resolution falls back to "Item #<id>".
+MAIN_DB = state_path("app_data.db")
+EVE_DB = None
 
 def iname(tid):
     """Retourne le nom d'un item par son type_id depuis eve.db (invTypes) ou sqlite3."""
     try:
-        import sqlite3, os
-        for db_path in [EVE_DB, "eve.db", os.path.join(os.path.dirname(__file__), "eve.db")]:
-            if os.path.exists(db_path):
+        import sqlite3
+        for db_path in ["eve.db", os.path.join(os.path.dirname(__file__), "eve.db")]:
+            if db_path and os.path.exists(db_path):
                 with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as con:
                     r = con.execute("SELECT typeName FROM invTypes WHERE typeID=?", (int(tid),)).fetchone()
                     if r and r[0]:
@@ -46,7 +48,7 @@ def scan(public_orders=None):
         return {"ok": False, "error": f"Base introuvable: {MAIN_DB}"}
 
     con = sqlite3.connect(MAIN_DB); cur = con.cursor()
-    eve = sqlite3.connect(EVE_DB) if os.path.exists(EVE_DB) else None
+    eve = sqlite3.connect(EVE_DB) if (EVE_DB and os.path.exists(EVE_DB)) else None
     ecur = eve.cursor() if eve else None
 
     names = {r[0]: r[1] for r in cur.execute("SELECT id, name FROM characters")}

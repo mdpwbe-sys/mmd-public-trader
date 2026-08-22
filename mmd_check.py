@@ -13,19 +13,18 @@ Usage: double-clique mmd_check.bat -> fais Import all (3 persos) + coche
 'Show for all characters' + Import prices, puis appuie sur une touche.
 """
 import os, sqlite3, sys, subprocess, datetime
+from platform_state import state_path
 
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
-EVE_DB  = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
-EXE     = r"E:\EVE\mmd\bin\Mmd.exe"
+# Operational DB in persistent app state dir (APPDATA/MMD-Trader); not the
+# legacy %LOCALAPPDATA%/mmd.com/Mmd path. eve.db (SDE) is not bundled.
+MAIN_DB = state_path("app_data.db")
+EVE_DB = None
 
 
 def open_mmd():
-    if os.path.exists(EXE):
-        try:
-            subprocess.Popen([EXE]); return True
-        except Exception as e:
-            print(f"[!] impossible de lancer Mmd ({e})")
+    # Standalone dev helper: the app is launched separately (exe or mmd_gui.py).
+    # This script only reads the operational DB; it does not launch anything.
+    print("[i] Lance l'appli MMD-Trader separement, puis relance ce script.")
     return False
 
 
@@ -47,7 +46,7 @@ def main():
         print("ERREUR: base introuvable:", MAIN_DB); return 1
 
     con = sqlite3.connect(MAIN_DB); cur = con.cursor()
-    eve = sqlite3.connect(EVE_DB) if os.path.exists(EVE_DB) else None
+    eve = sqlite3.connect(EVE_DB) if (EVE_DB and os.path.exists(EVE_DB)) else None
     ecur = eve.cursor() if eve else None
 
     names = {r[0]: r[1] for r in cur.execute("SELECT id, name FROM characters")}

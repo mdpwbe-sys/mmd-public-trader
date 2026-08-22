@@ -4,6 +4,21 @@ Tous les changements notables sont documentés ici. Le format suit les
 principes de [Keep a Changelog](https://keepachangelog.com/), le versionnage
 est en [SemVer](https://semver.org/).
 
+## [0.1.3] — 2026-08-22
+
+### Ajouté
+- **Build exécutable autonome (Option B)** : `.exe` onefile via PyInstaller + assistant de premier lancement (l'utilisateur fournit son propre `CLIENT_ID`/`CLIENT_SECRET` CCP, aucun secret embarqué).
+- **Trader universel** : stations BUY/SELL configurables par l'utilisateur, frais de faction dynamiques (via SDE), gestion des citadelles (Upwell + ID brut).
+- **Hotkeys globaux** : `Alt+Shift+F` (suivant) / `Ctrl+Shift+F` (précédent).
+- **Fast Copy Price** : copie du prix recommandé au presse-papiers au format décimal EVE.
+
+### Corrigé (neutralisation pour distribution publique)
+- Suppression de toute donnée personnelle du code (User-Agent, chemins `E:\EVE\...`, `%LOCALAPPDATA%\mmd.com\Mmd`, vault Obsidian).
+- Bases de données opérationnelles redirigées vers le répertoire d'état persistant (`%APPDATA%/MMD-Trader`) au lieu des chemins legacy.
+- `eve.db` (SDE) non embarqué : résolution des noms via ESI `/universe/names/` + ID brut, sans crash sur installation neuve.
+- Scopes CCP documentés alignés sur `mmd_sso.py` (assets, contracts, divisions, blueprints, etc.).
+- Promesses marketing tempérées (analyse concurrence ~5 min cache ESI, stockage WAL atomique, export = aide à l'action utilisateur).
+
 ## [0.1.2] — 2026-08-09
 
 ### Corrigé (stabilisation post-0.1.1)

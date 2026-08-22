@@ -16,7 +16,10 @@ Portee BUY (CCP): range 0=region, 1=systeme, 2=constellation(5 sauts),
 import os, sqlite3, json
 
 LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-EVE_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
+# eve.db is NOT bundled in the public build (SDE not shipped). Resolution falls
+# back to ESI /universe/names/ + raw-ID labels. Keep EVE_DB=None so legacy code
+# paths skip the database gracefully instead of crashing on a missing path.
+EVE_DB = None
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENV = os.path.join(HERE, ".env")
 
@@ -39,6 +42,10 @@ def _load_env_stations():
         k, v = line.split("=", 1)
         cfg[k.strip()] = v.strip()
     import sqlite3 as sq
+    if EVE_DB is None:
+        # No bundled SDE (eve.db): cannot resolve names→systems. Return env
+        # stations with raw names; system resolution falls back elsewhere.
+        return out
     c = sq.connect(EVE_DB)
     # Trading_Upwell_ID=35833//1044752365771  + Trading_Upwell_NAME=Perimeter ...
     if "Trading_Upwell_ID" in cfg and "Trading_Upwell_NAME" in cfg:
@@ -84,14 +91,15 @@ def resolve_name(location_id, fallback=""):
     loc_id = int(location_id or 0)
     if not loc_id:
         return fallback or "Inconnu"
-    try:
-        c = sqlite3.connect(EVE_DB)
-        r = c.execute("SELECT stationName FROM staStations WHERE stationID=?", (loc_id,)).fetchone()
-        c.close()
-        if r and r[0]:
-            return r[0]
-    except Exception:
-        pass
+    if EVE_DB is not None:
+        try:
+            c = sqlite3.connect(EVE_DB)
+            r = c.execute("SELECT stationName FROM staStations WHERE stationID=?", (loc_id,)).fetchone()
+            c.close()
+            if r and r[0]:
+                return r[0]
+        except Exception:
+            pass
     env = _env_stations()
     if loc_id in env and env[loc_id].get("name"):
         return env[loc_id]["name"]
@@ -104,6 +112,8 @@ def faction_for_station(station_id):
     None si inconnu (citadelle non-resolue, ou SDE absente)."""
     loc_id = int(station_id or 0)
     if not loc_id:
+        return None
+    if EVE_DB is None:
         return None
     # citadelle Upwell : pas de faction SDE directe -> on ne devine pas
     if loc_id >= 1000000000000:
@@ -131,6 +141,17 @@ def resolve(location_id):
     """Retourne (solarSystemID, regionID, name) pour un location_id.
     None si inconnu."""
     if location_id in _sys_cache:
+        return _sys_cache[location_id]
+    if EVE_DB is None:
+        # No SDE: skip DB lookups, use env stations + raw-ID fallback.
+        env = _env_stations()
+        if location_id in env:
+            sysid = env[location_id]["solarSystemID"]
+            region = None
+            res = (sysid, region, env[location_id]["name"])
+            _sys_cache[location_id] = res
+            return res
+        _sys_cache[location_id] = (None, None, resolve_name(location_id, str(location_id)))
         return _sys_cache[location_id]
     c = sqlite3.connect(EVE_DB)
     # 1. station NPC
@@ -171,6 +192,9 @@ def _load_jumps():
     global _jumps
     if _jumps is not None:
         return
+    if EVE_DB is None:
+        _jumps = {}
+        return
     c = sqlite3.connect(EVE_DB)
     _jumps = {}
     for frm, to in c.execute("SELECT fromSolarSystemID, toSolarSystemID FROM mapSolarSystemJumps"):
@@ -181,6 +205,9 @@ def _load_jumps():
 def system_region(system_id):
     if system_id in _region_cache:
         return _region_cache[system_id]
+    if EVE_DB is None:
+        _region_cache[system_id] = None
+        return None
     c = sqlite3.connect(EVE_DB)
     r = c.execute("SELECT regionID FROM mapSolarSystems WHERE solarSystemID=?",
                   (system_id,)).fetchone()

@@ -21,10 +21,11 @@ import csv
 import os
 import sqlite3
 import time
+from platform_state import state_path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-EVE_DB = os.path.join(os.environ.get("LOCALAPPDATA", ""), "mmd.com", "Mmd",
-                       "resources", "eve.db")
+# eve.db (SDE) is NOT bundled in the public build.
+EVE_DB = None
 import mmd_price as prx  # prix en Decimal/centiemes (jamais float)
 
 

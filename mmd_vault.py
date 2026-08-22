@@ -20,16 +20,20 @@ L'app lit ces notes pour afficher l'evolution d'un item (et declencher des alert
 ex: le prix est tombe sous ton ordre => tu dois baisser).
 """
 import os, json, sqlite3, datetime
+from platform_state import state_path
 
-VAULT = r"E:\EVE\mmd\Memorie\Mmd"
-HIST_DIR = os.path.join(VAULT, "Historique")
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
-EVE_DB  = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
+# No private vault path. History export dir lives under the app state dir.
+HIST_DIR = state_path("Historique")
+# Operational DB in persistent app state dir (APPDATA/MMD-Trader); not the
+# legacy %LOCALAPPDATA%/mmd.com/Mmd path. eve.db (SDE) is not bundled.
+MAIN_DB = state_path("app_data.db")
+EVE_DB = None
 LIVE = "volume_remaining>0 AND last_seen IS NULL"
 
 
 def _iname(tid):
+    if EVE_DB is None:
+        return f"typeID {tid}"
     con = sqlite3.connect(EVE_DB)
     r = con.execute("SELECT typeName FROM invTypes WHERE typeID=?", (tid,)).fetchone()
     con.close()

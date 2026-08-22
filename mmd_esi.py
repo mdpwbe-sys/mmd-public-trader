@@ -15,9 +15,11 @@ Endpoints:
 """
 import urllib.request, urllib.error, json, sqlite3, os, time, random, threading
 from concurrent.futures import ThreadPoolExecutor
+from platform_state import state_path
 
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
+# Operational DB lives in the persistent app state dir (APPDATA/MMD-Trader),
+# not the legacy %LOCALAPPDATA%/mmd.com/Mmd path.
+MAIN_DB = state_path("app_data.db")
 REGION_THE_FORGE = 10000002
 ESI = "https://esi.evetech.net/latest"
 
@@ -37,10 +39,11 @@ def _load_esi_env():
     return cfg
 
 _ESI_ENV = _load_esi_env()
-# User-Agent CCP: nom + version + contact (obligatoire en pratique)
+# User-Agent CCP: nom + version + contact (obligatoire en pratique).
+# The default is neutral; users set their own via ESI_USER_AGENT in .env.
 UA = {"User-Agent": _ESI_ENV.get(
     "ESI_USER_AGENT",
-    "MarketManagerDashboard/0.1.2 (eve:CHARACTER_THREE; contact:balboing@hotmail.com)")}
+    "EVE-Market-Manager/0.1.3 (contact: configure-your-user-agent)")}
 
 # X-Compatibility-Date: date a laquelle l'appli a ete testee/revisee.
 # CCP peut repondre avec la date demandee OU une date anterieure (selon la

@@ -16,7 +16,7 @@ This is the **universal trader** build: any region, any station, any citadel —
 ## ⚡ Key Features
 
 - **🌐 Multi-Character ESI SSO Authentication**: Connect up to 4+ EVE characters simultaneously via official EVE Online OAuth2 SSO.
-- **🎯 Real-Time Competition Analysis**: Instant detection of outbid orders, competitor undercuts, and FIFO queue positioning across regional trade hubs.
+- **🎯 ESI-Cached Competition Analysis (near-real-time)**: Detection of outbid orders, competitor undercuts, and FIFO queue positioning. Market orders are cached by CCP for ~5 minutes, so reads reflect the latest ESI snapshot rather than live ticks.
 - **📈 Visual Sparkline Trends & Multi-Series Tracking**: Track historical trends of orders needing update per character or scan mode without graph jump anomalies.
 - **💎 Visual Duplicate Item Gallery & Character LED Indicators**: Spot self-competing orders across your alts with unique item icons and colored LED owner indicators:
   - 🔵 **Cyan / Blue**: Char 1
@@ -32,7 +32,7 @@ This is the **universal trader** build: any region, any station, any citadel —
   - **Ctrl + Shift + F** → previous order in the list
 - **📋 Fast Copy Price**: copies the selected order's new/recommended price to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste straight into the EVE client's price field.
 - **🔒 Mono-Instance Lock & Heartbeat**: Robust process locking preventing zombie locks and startup collisions on Windows.
-- **💾 SQLite WAL Engine (Zero Data Loss)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions and automatic backoff retries.
+- **💾 Durable Local Storage (WAL + Atomic Writes)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions, WAL mode, and automatic backoff retries.
 
 ---
 
@@ -75,14 +75,20 @@ Persistent data (DB, `.env`, logs) lives in `%APPDATA%/MMD-Trader` — so it sur
 1. Go to the [CCP Developers Portal](https://developers.eveonline.com/).
 2. Click **Create New Application**.
 3. Set **Connection Type** to `Authentication & API Access`.
-4. Add the required Scopes:
+4. Add the required Scopes (must match `mmd_sso.py` exactly):
    - `esi-ui.open_window.v1`
    - `esi-markets.read_character_orders.v1`
    - `esi-markets.structure_markets.v1`
    - `esi-universe.read_structures.v1`
    - `esi-wallet.read_character_wallet.v1`
    - `esi-markets.read_corporation_orders.v1`
-   - `esi-wallet.read_corporation_wallet.v1`
+   - `esi-wallet.read_corporation_wallets.v1`
+   - `esi-assets.read_assets.v1`
+   - `esi-assets.read_corporation_assets.v1`
+   - `esi-contracts.read_character_contracts.v1`
+   - `esi-contracts.read_corporation_contracts.v1`
+   - `esi-corporations.read_divisions.v1`
+   - `esi-characters.read_blueprints.v1`
    - `esi-characters.read_standings.v1`
    - `esi-skills.read_skills.v1`
 5. Set **Callback URL** to `http://127.0.0.1:8765/callback`.
@@ -140,8 +146,8 @@ Unlike the original Mmd (Jita/Perimeter only), this build is hub-agnostic:
 - Foreign citadels you don't own show their raw `location_id`; you can still filter and trade against them.
 
 ### 8. Export & history
-- **Price history**: 5-year daily history per item (from the bundled reference data / ESI).
-- **Export**: push order updates back via ESI, or export item details (potential gain, fees, breakdown) — the "Elinor/Evernus-style" deep dive, without those tools installed.
+- **Price history**: daily history per item sourced from ESI public market data and the bundled quickbar reference snapshots.
+- **Export**: the app helps you act, but you perform the update yourself — it opens the item's market window via ESI (`esi-ui.open_window`) and **Fast Copy** puts the recommended price on your clipboard; you paste it into the EVE client. You can also export an item deep-dive (potential gain, fees, breakdown) — the "Elinor/Evernus-style" view, without those tools installed.
 
 ---
 

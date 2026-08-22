@@ -9,15 +9,18 @@ Lit la base Mmd et alimente le vault avec:
   3) Bilan doublons + prix depasses (delegue a la logique de mmd_check)
 
 Vault: Mmd Memorie (chemin raw dans VAULT ci-dessous)
-Base : %LOCALAPPDATA%/mmd.com/Mmd/db/main.db
+Base : %APPDATA%/MMD-Trader/app_data.db (etat persistant)
+eve.db (SDE) non embarque dans le build public.
 """
 import os, sqlite3, sys, datetime, re
+from platform_state import state_path
 
-LOCAL = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
-MAIN_DB = os.path.join(LOCAL, "mmd.com", "Mmd", "db", "main.db")
-EVE_DB  = os.path.join(LOCAL, "mmd.com", "Mmd", "resources", "eve.db")
-VAULT   = r"E:\EVE\mmd\Memorie\Mmd"
-HIST_DIR = os.path.join(VAULT, "Historique")
+# Operational DB in persistent app state dir (APPDATA/MMD-Trader); not the
+# legacy %LOCALAPPDATA%/mmd.com/Mmd path. eve.db (SDE) is not bundled.
+MAIN_DB = state_path("app_data.db")
+EVE_DB = None
+# History export dir: under the app state dir (no private vault path).
+HIST_DIR = state_path("Historique")
 
 # Seuil d'anomalie: prix de vente > 2x ou < 0.5x la moyenne historique de l'item
 MULT_HI = 2.0
@@ -32,7 +35,7 @@ def main():
     os.makedirs(HIST_DIR, exist_ok=True)
 
     con = sqlite3.connect(MAIN_DB); cur = con.cursor()
-    eve = sqlite3.connect(EVE_DB) if os.path.exists(EVE_DB) else None
+    eve = sqlite3.connect(EVE_DB) if (EVE_DB and os.path.exists(EVE_DB)) else None
     ecur = eve.cursor() if eve else None
     def iname(tid):
         if ecur:
