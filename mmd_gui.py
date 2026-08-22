@@ -1170,8 +1170,8 @@ class Api:
                 for cid, snap in self._snapshots.items()]
 
     def settings(self):
-        vault = r"E:\EVE\mmd\Memorie\Mmd"
-        os.startfile(vault if os.path.exists(vault) else HERE)
+        # Ouvre le dossier de l'application (plus de reference au vault Obsidian perso)
+        os.startfile(HERE)
 
     def fetch_market_prices(self):
         """Refetch uniquement le livre public (concurrence) et recalcule l'ecart

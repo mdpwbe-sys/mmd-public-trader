@@ -33,7 +33,6 @@ This is the **universal trader** build: any region, any station, any citadel —
 - **📋 Fast Copy Price**: copies the selected order's new/recommended price to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste straight into the EVE client's price field.
 - **🔒 Mono-Instance Lock & Heartbeat**: Robust process locking preventing zombie locks and startup collisions on Windows.
 - **💾 SQLite WAL Engine (Zero Data Loss)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions and automatic backoff retries.
-- **📓 Obsidian Vault Mirroring**: Non-blocking Markdown trade journals to your Obsidian vault.
 
 ---
 
