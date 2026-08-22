@@ -39,7 +39,7 @@ This is the **universal trader** build: any region, any station, any citadel —
 **Prerequisites:** Python 3.10+ (3.14 compatible), Windows 10/11 (WebView2 / EdgeChromium).
 
 ```bash
-git clone https://github.com/mdpwbe-sys/mmd.git
+git clone https://github.com/mdpwbe-sys/mmd-public-trader.git
 cd mmd
 pip install -r requirements.txt
 python mmd_gui.py
