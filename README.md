@@ -27,7 +27,10 @@ This is the **universal trader** build: any region, any station, any citadel —
 - **🏪 Configurable BUY / SELL Stations**: Pick your own BUY station and SELL station per trade (UI picker + direct ID). Faction standing fees resolved dynamically from the selected station — no hardcoded hub.
 - **🛰️ Citadel-Aware**: Recognizes Upwell structures. Unresolved citadels (not owned by your corp) show their raw ID and remain filterable — never a crash.
 - **🐕 Marketlogs Watchdog**: Watches your EVE `Marketlogs` folder and auto-imports new character/corporation order exports the moment EVE writes them — no manual refresh needed.
-- **⚡ Fast Copy Price**: A system-wide hotkey (Win + F by default) copies the new price of the selected order straight to your clipboard in EVE's decimal format, ready to paste into the client.
+- **⚡ Global Hotkeys (navigation)**: System-wide shortcuts that work even when the EVE client or another window is focused:
+  - **Alt + Shift + F** → next order in the list
+  - **Ctrl + Shift + F** → previous order in the list
+- **📋 Fast Copy Price**: copies the selected order's new/recommended price to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste straight into the EVE client's price field.
 - **🔒 Mono-Instance Lock & Heartbeat**: Robust process locking preventing zombie locks and startup collisions on Windows.
 - **💾 SQLite WAL Engine (Zero Data Loss)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions and automatic backoff retries.
 - **📓 Obsidian Vault Mirroring**: Non-blocking Markdown trade journals to your Obsidian vault.
@@ -119,10 +122,13 @@ Unlike the original Mmd (Jita/Perimeter only), this build is hub-agnostic:
 - Select an item → a popover shows **net profit** after exact **CCP broker fees + accounting tax**, computed for your configured BUY/SELL stations.
 - **Bulk Batch scaling**: for commodities (e.g. Tritanium), it scales the margin across the full volume you intend to move.
 
-### 5. Fast Copy Price (hotkey)
-- Select an order in the list, then press the global hotkey (**Win + F** by default).
-- The app copies the **new recommended price** to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste directly into the EVE client's price field.
-- Works system-wide (even when the app window is not focused) — *as long as only one instance is running*.
+### 5. Global hotkeys (navigation)
+- **Alt + Shift + F** → jump to the **next** order in the list.
+- **Ctrl + Shift + F** → jump to the **previous** order in the list.
+- These are system-wide: they work even when the EVE client or any other window is focused (as long as only one app instance is running).
+
+### 6. Fast Copy Price
+- Select an order in the list, then use the in-app **Fast Copy** action to copy the **new/recommended price** to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste directly into the EVE client's price field.
 
 ### 6. Marketlogs Watchdog (auto-import)
 - The **watchdog** monitors your EVE `Documents/EVE/logs/Marketlogs` folder.
