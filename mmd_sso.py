@@ -29,10 +29,11 @@ import os, json, time, threading, base64, hashlib, html, secrets
 import urllib.parse, urllib.request, urllib.error
 import mmd_crypto
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from platform_state import state_path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENV = os.path.join(HERE, ".env")
-CACHE = os.path.join(HERE, ".env.cache")
+ENV = state_path(".env")
+CACHE = state_path(".env.cache")
 
 SCOPES = [
     "esi-ui.open_window.v1",

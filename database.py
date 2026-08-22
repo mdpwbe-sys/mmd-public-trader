@@ -18,8 +18,10 @@ import threading
 import time
 from contextlib import contextmanager
 
+from platform_state import state_path
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(HERE, "app_data.db")
+DB_PATH = state_path("app_data.db")
 
 _PRAGMAS = (
     "PRAGMA journal_mode = WAL;",

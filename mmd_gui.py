@@ -1392,6 +1392,53 @@ class Api:
         m.save_config(cfg)
         return self.get_station_config()
 
+    def firstrun_status(self):
+        """True si le .env (CLIENT_ID) est deja configure."""
+        import os as _os
+        from platform_state import state_path
+        env = state_path(".env")
+        if not _os.path.exists(env):
+            return {"configured": False}
+        try:
+            with open(env, encoding="utf-8") as f:
+                for line in f:
+                    if line.strip().startswith("CLIENT_ID") and "=" in line:
+                        v = line.split("=", 1)[1].strip()
+                        if v:
+                            return {"configured": True}
+        except Exception:
+            pass
+        return {"configured": False}
+
+    def save_firstrun_config(self, payload):
+        """Option B : premier lancement -> ecrit le .env (CLIENT_ID/SECRET du user)
+        puis declenche la connexion CCP pour peupler l'app."""
+        import os as _os
+        from platform_state import state_path
+        try:
+            payload = json.loads(payload) if isinstance(payload, str) else payload
+        except Exception:
+            payload = {}
+        cid = (payload.get("client_id") or "").strip()
+        sec = (payload.get("client_secret") or "").strip()
+        if not cid or not sec:
+            return {"ok": False, "error": "CLIENT_ID et CLIENT_SECRET requis"}
+        env = state_path(".env")
+        # preserve callback + scopes from .env.example defaults if absent
+        lines = [
+            f"CLIENT_ID={cid}",
+            f"CLIENT_SECRET={sec}",
+            "CALLBACK_URL=http://127.0.0.1:8765/callback",
+        ]
+        _os.makedirs(_os.path.dirname(env), exist_ok=True)
+        with open(env, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        # refresh module cache so get_login_url picks up the new client id
+        import importlib
+        import mmd_sso
+        importlib.reload(mmd_sso)
+        return {"ok": True}
+
     def search_station(self, query):
         """Recherche station/citadelle par nom via ESI /universe/ids (anonyme).
         Retourne [{id, name, category}] trie par pertinence."""

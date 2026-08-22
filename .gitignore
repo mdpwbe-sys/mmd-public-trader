@@ -75,3 +75,8 @@ boot_stderr.txt
 app_data.db
 app_data.db-wal
 app_data.db-shm
+
+# PyInstaller build artefacts (regenerables, jamais trackes)
+dist/
+build/
+*.spec
