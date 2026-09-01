@@ -378,6 +378,7 @@
       </div>
       <div class="chars" id="chars"></div>
       <button class="btn small" id="import-btn" onclick="importEve()" title="Importe un export EVE 'Export your market orders' pour le perso sélectionné">Import</button>
+      <button class="btn small eve-map-launch" onclick="openEveMap()" title="Offline interactive map of New Eden">New Eden</button>
       <div class="sso-wrapper">
         <button class="btn small" id="sso-btn" onclick="toggleSsoPin(event)" style="display:none">Connect EVE</button>
         <div class="sso-popover" id="sso-popover">
@@ -2692,6 +2693,17 @@
   </div>
 </div>
 
+<div id="eve-map-overlay" class="eve-map-overlay" aria-hidden="true">
+  <section class="eve-map-dialog" role="dialog" aria-modal="true" aria-labelledby="eve-map-title">
+    <header class="eve-map-header"><div><div class="eve-map-kicker">OFFLINE NAVIGATION</div><h2 id="eve-map-title">New Eden</h2></div><button class="modal-x" onclick="closeEveMap()" aria-label="Close map">&times;</button></header>
+    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><button class="btn mini" id="eve-map-fit">Galaxy view</button></div>
+    <main class="eve-map-content"><div id="eve-map-canvas" class="eve-map-canvas"><div class="eve-map-status">Loading topology…</div></div><aside id="eve-map-panel" class="eve-map-panel"><div class="eve-map-empty">Select a system.</div><div class="eve-map-route"><input id="eve-route-from" placeholder="From (ID or system)"><input id="eve-route-to" placeholder="To (ID or system)"><button class="btn mini" id="eve-map-route">Route</button><div id="eve-route-result"></div></div></aside></main>
+  </section>
+</div>
+
+<link rel="stylesheet" href="eve_map.css">
 <script src="trading-ui.js"></script>
+<script src="vendor/3d-force-graph.min.js"></script>
+<script src="eve_map.js"></script>
 </body>
 </html>

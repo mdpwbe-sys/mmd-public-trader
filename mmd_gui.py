@@ -251,6 +251,21 @@ def _latest_my_orders_file():
 
 
 class Api:
+    def get_eve_map_data(self):
+        """Expose the bundled New Eden topology without ESI or OAuth access."""
+        try:
+            import eve_map_service
+            return {"ok": True, "data": eve_map_service.get_map_data()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def find_eve_route(self, source_id, target_id):
+        try:
+            import eve_map_service
+            return {"ok": True, "data": eve_map_service.find_route(source_id, target_id)}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def scan(self, refresh_esi=True):
         """Lance le scan dans un thread et pousse le resultat au JS.
         Source: si SSO connecte -> ordres ESI authentifies (scan_authed),

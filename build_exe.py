@@ -26,6 +26,7 @@ PyInstaller.__main__.run([
     "--exclude-module=tkinter",
     "--hidden-import=webview",
     "--hidden-import=mmd_core",
+    "--hidden-import=eve_map_service",
     "--hidden-import=mmd_sso",
     "--hidden-import=mmd_margin",
     "--hidden-import=mmd_stations",
