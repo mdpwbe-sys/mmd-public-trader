@@ -33,6 +33,26 @@ This is the **universal trader** build: any region, any station, any citadel —
 - **📋 Fast Copy Price**: copies the selected order's new/recommended price to the clipboard in EVE's decimal format (e.g. `12.345,67`), ready to paste straight into the EVE client's price field.
 - **🔒 Mono-Instance Lock & Heartbeat**: Robust process locking preventing zombie locks and startup collisions on Windows.
 - **💾 Durable Local Storage (WAL + Atomic Writes)**: High-concurrency operational store using `BEGIN IMMEDIATE` transactions, WAL mode, and automatic backoff retries.
+- **🗺️ New Eden 3D Tactical Map**: Explore authentic SDE system positions and real stargate connections in an interactive 3D galaxy, with search, camera focus, security filters, zoom-aware labels, and precise hover selection.
+- **🧭 Route Planner & High-Sec Safety**: Set origin/destination directly on the map, inspect every traversed system, receive security warnings, and request a high-sec route that stays at or above 0.5 security where one exists.
+- **📡 Cached Live Tactical Intel**: Optional Traffic and Danger overlays use CCP's public ESI jump and kill data with a resilient local cache; animated gate particles visually model estimated link traffic without blocking navigation when ESI is unavailable.
+- **🏳️ Influence Overlays**: Display player sovereignty only for eligible null-sec systems, or static Empire & NPC influence, as a separate visual layer over the base security map.
+- **💀 Lazy zKillboard Intel**: Opening a system panel can fetch a small, cached set of recent kills on demand, including location, time, value, and an attacker/ship breakdown with links to the external kill reports.
+
+---
+
+## 🌌 New Eden Tactical Map
+
+The **New Eden** tab is an interactive navigation and intel view built from bundled SDE geometry: it loads the galaxy and the real stargate graph locally, so the map remains available even when live services are unavailable.
+
+- **Navigation**: search for a system, click to focus it, use right-click to set an origin, double-click to set a destination, or return to the full New Eden view. Region and constellation labels progressively appear at the appropriate zoom level.
+- **Security & gates**: high-sec, low-sec, null-sec, and Pochven are visually distinct. Stargate links use a security-aware gradient, making the 0.5 ↔ 0.4 and 0.1 ↔ 0.0 transitions immediately visible.
+- **Routes**: the selected route is highlighted system by system with EVE-style square markers. Its summary reports jump count, high-sec safety, traffic, kills, and dangerous systems. A high-sec alternative is offered when the direct route crosses low-sec or null-sec.
+- **Live data**: Traffic and Danger are optional overlays sourced server-side from CCP's public ESI endpoints. Results are cached for several minutes and gracefully fall back to the most recent snapshot, so live data never prevents the base map from working.
+- **Influence**: Player sovereignty and Empire & NPC overlays retain the normal security colors underneath. The sovereignty layer excludes faction/pirate and non-null systems by design.
+- **zKillboard**: Recent kills are loaded only after opening a system panel—never for the whole galaxy—and remain cached. Hover a kill for attacker and ship details, then open the external report when needed.
+
+The visual layer also includes a 360° celestial sky, subtle nebula background, distance-aware system markers, and animated traffic particles. These effects reuse the map's existing canvas render path rather than creating a costly Three.js object per system.
 
 ---
 
