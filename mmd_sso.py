@@ -292,7 +292,7 @@ def revoke_all():
 
 def _callback_url():
     cfg = _load_env()
-    cb = cfg.get("CALLBACK_URL", "http://127.0.0.1:8765/callback")
+    cb = cfg.get("CALLBACK_URL", "http://127.0.0.1:8766/callback")
     if "localhost" in cb:
         cb = cb.replace("localhost", "127.0.0.1")
     return cb
@@ -337,7 +337,7 @@ def get_login_url():
         raise RuntimeError(
             "CLIENT_ID manquant. Copie .env.example -> .env et renseigne "
             "CLIENT_ID / CLIENT_SECRET depuis https://developers.eveonline.com "
-            "(cree une application, callback http://127.0.0.1:8765/callback).")
+            "(cree une application, callback http://127.0.0.1:8766/callback).")
     state, challenge, cb = _new_oauth_session()
     params = {
         "response_type": "code",
@@ -361,9 +361,11 @@ def _post_form(url, data, headers=None):
 
 
 def _verify(access_token):
+    if not access_token:
+        raise RuntimeError("OAuth verify: access token absent")
     req = urllib.request.Request(
-        "https://login.eveonline.com/oauth/verify",
-        headers={"Authorization": f"Bearer {access_token}"})
+        "https://login.eveonline.com/v2/oauth/verify",
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode("utf-8"))
 
@@ -548,7 +550,7 @@ def _stop_server():
 def start_login_server():
     global _server
     cb = _callback_url()
-    port = int(urllib.parse.urlparse(cb).port or 8765)
+    port = int(urllib.parse.urlparse(cb).port or 8766)
     _login_result.clear()
     try:
         auth_url = get_login_url()

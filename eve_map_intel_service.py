@@ -1,0 +1,312 @@
+"""Cached public tactical intel for the New Eden map.
+
+Map topology is deliberately kept separate from this optional live layer: a
+network failure must never make the static map or routing unavailable.
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import threading
+import time
+import gzip
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from platform_state import state_path
+
+
+ESI_BASE = "https://esi.evetech.net/latest"
+LIVE_TTL_SECONDS = 600
+SOVEREIGNTY_TTL_SECONDS = 15 * 60
+STALE_TTL_SECONDS = 24 * 60 * 60
+ZKILL_TTL_SECONDS = 10 * 60
+ENTITY_NAME_TTL_SECONDS = 7 * 24 * 60 * 60
+MAX_KILL_ATTACKERS = 20
+ZKILL_USER_AGENT = os.environ.get(
+    "MMD_MAP_USER_AGENT", "EVE-Market-Manager/1.0 (configure MMD_MAP_USER_AGENT)"
+)
+
+
+def danger_score(ship_kills: int, pod_kills: int) -> int:
+    """A bounded logarithmic score; pod losses carry a deliberately higher weight."""
+    raw = max(0, int(ship_kills)) + max(0, int(pod_kills)) * 2.5
+    return round(min(100, math.log1p(raw) / math.log1p(50) * 100))
+
+
+def danger_band(score: int) -> str:
+    if score >= 75:
+        return "red"
+    if score >= 50:
+        return "orange"
+    if score >= 20:
+        return "yellow"
+    return "normal"
+
+
+class EveMapIntelService:
+    def __init__(self, cache_path: Path | None = None, now=time.time, fetch_json=None, fetch_names=None):
+        self.cache_path = Path(cache_path or state_path("eve_map_intel.json"))
+        self.now = now
+        self.fetch_json = fetch_json or self._fetch_esi
+        self.fetch_names = fetch_names or self._fetch_entity_names
+        self._lock = threading.RLock()
+        self._character_positions = None
+        self._character_positions_at = 0
+
+    def _read_cache(self) -> dict:
+        try:
+            return json.loads(self.cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _write_cache(self, payload: dict) -> None:
+        try:
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(self.cache_path)
+        except OSError:
+            pass
+
+    def _fetch_esi(self, endpoint: str):
+        # Reuse the application's public ESI transport (ETag, CCP error-limit
+        # handling, retry/backoff and its own stale snapshot behaviour).
+        import mmd_esi
+        if endpoint == "/sovereignty/map/":
+            # This newer public route returns 404 when the app-wide historical
+            # X-Compatibility-Date is sent.  This service owns a 15-minute
+            # cache, so a direct current-route read cannot become a polling bypass.
+            request = urllib.request.Request(
+                f"{ESI_BASE}{endpoint}",
+                headers={"User-Agent": "EveMarketManager/1.0 (public sovereignty map)", "Accept": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=8) as response:
+                return json.loads(response.read().decode("utf-8"))
+        mmd_esi._load_cache()
+        data, state = mmd_esi._get(f"{ESI_BASE}{endpoint}", timeout=8, include_cache_state=True)
+        if data is None:
+            raise RuntimeError(f"ESI {state}")
+        return data
+
+    @staticmethod
+    def _fetch_entity_names(ids: list[int]) -> list[dict]:
+        """Resolve a small, user-selected set of public EVE entity IDs."""
+        request = urllib.request.Request(
+            f"{ESI_BASE}/universe/names/",
+            data=json.dumps(ids).encode("utf-8"),
+            method="POST",
+            headers={
+                "User-Agent": "EveMarketManager/1.0 (map entity names)",
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(request, timeout=8) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _normalise(jumps: list, kills: list) -> dict:
+        systems = {}
+        for row in jumps:
+            system_id = int(row.get("system_id", 0))
+            if system_id:
+                systems[system_id] = {"ship_jumps": max(0, int(row.get("ship_jumps", 0))), "ship_kills": 0, "pod_kills": 0, "npc_kills": 0}
+        for row in kills:
+            system_id = int(row.get("system_id", 0))
+            if not system_id:
+                continue
+            values = systems.setdefault(system_id, {"ship_jumps": 0, "ship_kills": 0, "pod_kills": 0, "npc_kills": 0})
+            values.update({key: max(0, int(row.get(key, 0))) for key in ("ship_kills", "pod_kills", "npc_kills")})
+        for values in systems.values():
+            values["danger"] = danger_score(values["ship_kills"], values["pod_kills"])
+            values["danger_band"] = danger_band(values["danger"])
+        return {str(system_id): values for system_id, values in systems.items()}
+
+    def get_live_intel(self, force=False) -> dict:
+        """Return fresh data where possible, otherwise last cache marked stale."""
+        with self._lock:
+            cached, now = self._read_cache(), self.now()
+            age = max(0, int(now - cached.get("updated_at", 0))) if cached else None
+            if cached.get("systems") and not force and age is not None and age < LIVE_TTL_SECONDS:
+                return {"ok": True, "systems": cached["systems"], "updated_at": cached["updated_at"], "state": "fresh", "age_seconds": age}
+            try:
+                jumps = self.fetch_json("/universe/system_jumps/")
+                kills = self.fetch_json("/universe/system_kills/")
+                systems = self._normalise(jumps if isinstance(jumps, list) else [], kills if isinstance(kills, list) else [])
+                snapshot = {"updated_at": now, "systems": systems}
+                cached.update(snapshot)
+                self._write_cache(cached)
+                return {"ok": True, **snapshot, "state": "live", "age_seconds": 0}
+            except Exception as exc:
+                if cached.get("systems") and age is not None and age <= STALE_TTL_SECONDS:
+                    return {"ok": True, "systems": cached["systems"], "updated_at": cached["updated_at"], "state": "stale", "age_seconds": age, "error": str(exc)}
+                return {"ok": False, "systems": {}, "state": "unavailable", "error": str(exc)}
+
+    def get_sovereignty(self, force=False) -> dict:
+        """Cached public sovereignty overlay; it never blocks the base map."""
+        with self._lock:
+            cached, now = self._read_cache(), self.now()
+            entry = cached.get("sovereignty", {})
+            age = max(0, int(now - entry.get("updated_at", 0))) if entry else None
+            if entry.get("systems") and not force and age is not None and age < SOVEREIGNTY_TTL_SECONDS:
+                return {"ok": True, "systems": entry["systems"], "updated_at": entry["updated_at"], "state": "fresh", "age_seconds": age}
+            try:
+                rows = self.fetch_json("/sovereignty/map/")
+                systems = {}
+                for row in rows if isinstance(rows, list) else []:
+                    system_id = int(row.get("system_id", 0))
+                    if system_id:
+                        systems[str(system_id)] = {key: int(row[key]) for key in ("alliance_id", "corporation_id", "faction_id") if row.get(key)}
+                snapshot = {"updated_at": now, "systems": systems}
+                cached["sovereignty"] = snapshot
+                self._write_cache(cached)
+                return {"ok": True, **snapshot, "state": "live", "age_seconds": 0}
+            except Exception as exc:
+                if entry.get("systems") and age is not None and age <= STALE_TTL_SECONDS:
+                    return {"ok": True, "systems": entry["systems"], "updated_at": entry["updated_at"], "state": "stale", "age_seconds": age, "error": str(exc)}
+                return {"ok": False, "systems": {}, "state": "unavailable", "error": str(exc)}
+
+    def get_entity_names(self, ids) -> dict:
+        """Resolve panel-only faction/alliance/corporation IDs with a long TTL."""
+        requested = sorted({int(value) for value in ids or [] if str(value).isdigit() and int(value) > 0})
+        if not requested:
+            return {"ok": True, "names": {}, "state": "fresh"}
+        with self._lock:
+            cached, now = self._read_cache(), self.now()
+            entries = cached.get("entity_names", {})
+            fresh = {
+                entity_id for entity_id in requested
+                if entries.get(str(entity_id)) and now - entries[str(entity_id)].get("updated_at", 0) < ENTITY_NAME_TTL_SECONDS
+            }
+            missing = [entity_id for entity_id in requested if entity_id not in fresh]
+            try:
+                if missing:
+                    for row in self.fetch_names(missing) or []:
+                        entity_id = int(row.get("id", 0))
+                        if entity_id:
+                            entries[str(entity_id)] = {
+                                "name": str(row.get("name", entity_id)),
+                                "category": str(row.get("category", "entity")),
+                                "updated_at": now,
+                            }
+                    cached["entity_names"] = entries
+                    self._write_cache(cached)
+                names = {str(entity_id): entries[str(entity_id)] for entity_id in requested if str(entity_id) in entries}
+                return {"ok": True, "names": names, "state": "live" if missing else "fresh"}
+            except Exception as exc:
+                names = {str(entity_id): entries[str(entity_id)] for entity_id in requested if str(entity_id) in entries}
+                return {"ok": bool(names), "names": names, "state": "stale" if names else "unavailable", "error": str(exc)}
+
+    def get_recent_kills(self, system_id: int) -> dict:
+        """Lazy zKill lookup: never called while loading the galaxy."""
+        system_id = int(system_id)
+        with self._lock:
+            cache = self._read_cache()
+            zkill = cache.get("zkill", {})
+            entry, now = zkill.get(str(system_id)), self.now()
+            if entry and now - entry.get("updated_at", 0) < ZKILL_TTL_SECONDS and all("attackers" in kill for kill in entry.get("kills", [])):
+                return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry["updated_at"], "state": "fresh"}
+            url = f"https://zkillboard.com/api/kills/solarSystemID/{system_id}/"
+            request = urllib.request.Request(url, headers={"User-Agent": ZKILL_USER_AGENT, "Accept-Encoding": "gzip"})
+            try:
+                with urllib.request.urlopen(request, timeout=8) as response:
+                    raw = response.read()
+                    if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                        raw = gzip.decompress(raw)
+                    rows = json.loads(raw.decode("utf-8"))
+                kills = []
+                for row in rows[:5]:
+                    attackers = [{
+                        key: attacker.get(key) for key in ("character_id", "corporation_id", "alliance_id", "ship_type_id", "final_blow", "damage_done")
+                        if attacker.get(key) is not None
+                    } for attacker in row.get("attackers", [])]
+                    attackers.sort(key=lambda attacker: (not bool(attacker.get("final_blow")), -int(attacker.get("damage_done", 0))))
+                    kills.append({
+                        "killmail_id": row.get("killmail_id"), "time": row.get("killmail_time"), "value": row.get("zkb", {}).get("totalValue", 0),
+                        "solar_system_id": int(row.get("solar_system_id") or system_id), "ship_type_id": row.get("victim", {}).get("ship_type_id"), "url": f"https://zkillboard.com/kill/{row.get('killmail_id')}/",
+                        "attackers": attackers[:MAX_KILL_ATTACKERS], "attacker_count": len(attackers),
+                    })
+                zkill[str(system_id)] = {"updated_at": now, "kills": kills}
+                cache["zkill"] = zkill
+                self._write_cache(cache)
+                return {"ok": True, "kills": kills, "updated_at": now, "state": "live"}
+            except Exception as exc:
+                if entry:
+                    return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry.get("updated_at"), "state": "stale", "error": str(exc)}
+                return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
+
+    def get_kill_attackers(self, system_id: int, killmail_id: int) -> dict:
+        """Resolve attacker and ship names only when a cached kill is hovered."""
+        system_id, killmail_id = int(system_id), int(killmail_id)
+        with self._lock:
+            entry = self._read_cache().get("zkill", {}).get(str(system_id), {})
+            kill = next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+            if not kill:
+                return {"ok": False, "attackers": [], "state": "unavailable"}
+            attackers = kill.get("attackers", [])[:MAX_KILL_ATTACKERS]
+            ids = [attacker.get(key) for attacker in attackers for key in ("character_id", "corporation_id", "alliance_id", "ship_type_id") if attacker.get(key)]
+            names = self.get_entity_names(ids).get("names", {})
+            rows = []
+            for attacker in attackers:
+                character_id, corporation_id = attacker.get("character_id"), attacker.get("corporation_id")
+                identity_id = character_id or corporation_id or attacker.get("alliance_id")
+                ship_type_id = attacker.get("ship_type_id")
+                rows.append({
+                    **attacker,
+                    "pilot_name": names.get(str(identity_id), {}).get("name", f"Pilot {identity_id}" if identity_id else "Unknown pilot"),
+                    "ship_name": names.get(str(ship_type_id), {}).get("name", f"Ship {ship_type_id}" if ship_type_id else "Unknown ship"),
+                })
+            return {"ok": True, "attackers": rows, "total_attackers": int(kill.get("attacker_count", len(rows))), "state": "fresh"}
+
+    def get_character_positions(self) -> dict:
+        """Return only opt-in SSO characters with the location capability."""
+        with self._lock:
+            now = self.now()
+            if self._character_positions is not None and now - self._character_positions_at < 15:
+                return {"ok": True, "positions": self._character_positions, "state": "fresh"}
+            import mmd_esi_auth
+            import mmd_sso
+            positions, errors = [], []
+            for character in mmd_sso.connected_chars():
+                character_id = character["id"]
+                if not mmd_sso.character_capabilities(character_id).get("character_location"):
+                    continue
+                response = mmd_esi_auth.request_json("GET", f"/latest/characters/{character_id}/location/", character_id, timeout=8, max_attempts=2)
+                system_id = response.data.get("solar_system_id") if response.ok and isinstance(response.data, dict) else None
+                if system_id:
+                    positions.append({"character_id": character_id, "name": character["name"], "system_id": int(system_id)})
+                elif response.error:
+                    errors.append(response.error.message)
+            self._character_positions, self._character_positions_at = positions, now
+            if positions:
+                return {"ok": True, "positions": positions, "state": "live", "errors": errors}
+            return {"ok": False, "positions": [], "state": "scope_required" if not errors else "unavailable", "errors": errors}
+
+
+_default_service = EveMapIntelService()
+
+
+def get_live_intel(force=False):
+    return _default_service.get_live_intel(force)
+
+
+def get_recent_kills(system_id):
+    return _default_service.get_recent_kills(system_id)
+
+
+def get_kill_attackers(system_id, killmail_id):
+    return _default_service.get_kill_attackers(system_id, killmail_id)
+
+
+def get_sovereignty(force=False):
+    return _default_service.get_sovereignty(force)
+
+
+def get_entity_names(ids):
+    return _default_service.get_entity_names(ids)
+
+
+def get_character_positions():
+    return _default_service.get_character_positions()

@@ -259,12 +259,60 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
-    def find_eve_route(self, source_id, target_id):
+    def find_eve_route(self, source_id, target_id, min_security=None):
         try:
             import eve_map_service
-            return {"ok": True, "data": eve_map_service.find_route(source_id, target_id)}
+            return {"ok": True, "data": eve_map_service.find_route(source_id, target_id, min_security)}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
+
+    def get_eve_map_live_intel(self, force=False):
+        """Optional public ESI overlay; map topology stays usable on failure."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_live_intel(bool(force))
+        except Exception as exc:
+            return {"ok": False, "systems": {}, "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_recent_kills(self, system_id):
+        """Lazy zKill detail for a selected system only."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_recent_kills(system_id)
+        except Exception as exc:
+            return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_kill_attackers(self, system_id, killmail_id):
+        """Lazy attacker detail for one already-cached zKill entry."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_kill_attackers(system_id, killmail_id)
+        except Exception as exc:
+            return {"ok": False, "attackers": [], "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_sovereignty(self, force=False):
+        """Public CCP sovereignty map; cached separately from traffic/danger."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_sovereignty(bool(force))
+        except Exception as exc:
+            return {"ok": False, "systems": {}, "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_entity_names(self, ids):
+        """Resolve only IDs visible in the selected map-system panel."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_entity_names(ids)
+        except Exception as exc:
+            return {"ok": False, "names": {}, "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_character_positions(self):
+        """Optional authenticated map layer; only location-consented pilots appear."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_character_positions()
+        except Exception as exc:
+            return {"ok": False, "positions": [], "state": "unavailable", "error": str(exc)}
 
     def scan(self, refresh_esi=True):
         """Lance le scan dans un thread et pousse le resultat au JS.
@@ -472,7 +520,7 @@ class Api:
     def connect_eve(self):
         """Lance le consent CCP pour le 1er perso non-connecte (ou le 1er si tous deja la).
         En boucle: tu cliques Connect EVE, autorises un perso, puis re-cliques pour le suivant.
-        Le serveur local :8765 capture chaque callback en thread -> pas de freeze."""
+        Le serveur local :8766 capture chaque callback en thread -> pas de freeze."""
         import mmd_sso
         def worker():
             try:
@@ -1445,7 +1493,7 @@ class Api:
         lines = [
             f"CLIENT_ID={cid}",
             f"CLIENT_SECRET={sec}",
-            "CALLBACK_URL=http://127.0.0.1:8765/callback",
+            "CALLBACK_URL=http://127.0.0.1:8766/callback",
         ]
         _os.makedirs(_os.path.dirname(env), exist_ok=True)
         with open(env, "w", encoding="utf-8") as f:

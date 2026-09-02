@@ -91,7 +91,7 @@ Persistent data (DB, `.env`, logs) lives in `%APPDATA%/MMD-Trader` — so it sur
    - `esi-characters.read_blueprints.v1`
    - `esi-characters.read_standings.v1`
    - `esi-skills.read_skills.v1`
-5. Set **Callback URL** to `http://127.0.0.1:8765/callback`.
+5. Set **Callback URL** to `http://127.0.0.1:8766/callback`.
 6. Copy your `Client ID` and `Secret Key` into the first-launch wizard (or your local `.env`).
 
 ---
@@ -147,7 +147,7 @@ Unlike the original Mmd (Jita/Perimeter only), this build is hub-agnostic:
 
 ### 8. Export & history
 - **Price history**: daily history per item sourced from ESI public market data and the bundled quickbar reference snapshots.
-- **Export**: the app helps you act, but you perform the update yourself — it opens the item's market window via ESI (`esi-ui.open_window`) and **Fast Copy** puts the recommended price on your clipboard; you paste it into the EVE client. You can also export an item deep-dive (potential gain, fees, breakdown) — the "Elinor/Evernus-style" view, without those tools installed.
+- **Export**: the app helps you act, but you perform the update yourself — it opens the item's market window via ESI (`esi-ui.open_window`) and **Fast Copy** puts the recommended price on your clipboard; you paste it into the EVE client. You can also export an item deep-dive (potential gain, fees, breakdown) as a self-contained detailed analysis view.
 
 ---
 

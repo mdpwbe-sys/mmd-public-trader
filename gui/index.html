@@ -84,9 +84,6 @@
   .dup-img-fallback .fallback-txt { font-size: 9.5px; font-weight: 800; color: var(--orange-soft); letter-spacing: 0.4px; text-transform: uppercase; }
   .dup-leds { display: flex; gap: 3px; justify-content: center; align-items: center; margin-top: 1px; }
   .led { width: 6px; height: 6px; border-radius: 1.5px; display: inline-block; }
-  .led.CHARACTER_THREE { background: #2ee6e6; box-shadow: 0 0 6px #2ee6e6; }
-  .led.mike { background: #ff9a4d; box-shadow: 0 0 6px #ff9a4d; }
-  .led.sylnae { background: #b450ff; box-shadow: 0 0 6px #b450ff; }
   .led.other { background: #3ddc84; box-shadow: 0 0 6px #3ddc84; }
   .dup-empty-hint { font-size: 11px; color: var(--text-dim); font-style: italic; }
 
@@ -727,10 +724,10 @@
 
   // ---- ATTRIBUTION DYNAMIQUE DES LEDS COULEURS POUR TOUS LES PERSOS/ALTS ----
   const DYNAMIC_PALETTE = [
-    { color: '#2ee6e6', glow: 'rgba(46,230,230,0.8)' },   // 1. Cyan (CHARACTER_THREE)
-    { color: '#ff9a4d', glow: 'rgba(255,154,77,0.8)' },   // 2. Orange (CHARACTER_TWO)
-    { color: '#b450ff', glow: 'rgba(180,80,255,0.8)' },   // 3. Violet (CHARACTER_ONE)
-    { color: '#3ddc84', glow: 'rgba(61,220,132,0.8)' },   // 4. Émeraude (Kresner)
+    { color: '#2ee6e6', glow: 'rgba(46,230,230,0.8)' },   // 1. Cyan
+    { color: '#ff9a4d', glow: 'rgba(255,154,77,0.8)' },   // 2. Orange
+    { color: '#b450ff', glow: 'rgba(180,80,255,0.8)' },   // 3. Violet
+    { color: '#3ddc84', glow: 'rgba(61,220,132,0.8)' },   // 4. Émeraude
     { color: '#ffd13b', glow: 'rgba(255,209,59,0.8)' },   // 5. Or Électrique
     { color: '#ff4fa8', glow: 'rgba(255,79,168,0.8)' },   // 6. Magenta Rose
     { color: '#4fa8ff', glow: 'rgba(79,168,255,0.8)' },   // 7. Bleu Ciel
@@ -750,12 +747,6 @@
   function getCharColorInfo(name) {
     if (!name) return DYNAMIC_PALETTE[3]; // Fallback vert
     const norm = String(name).trim().toLowerCase();
-
-    // Persos principaux identifiés
-    if (norm.includes('CHARACTER_THREE')) return DYNAMIC_PALETTE[0];
-    if (norm.includes('mike')) return DYNAMIC_PALETTE[1];
-    if (norm.includes('sylnae')) return DYNAMIC_PALETTE[2];
-    if (norm.includes('kresner')) return DYNAMIC_PALETTE[3];
 
     if (window.__charColorMap[norm]) return window.__charColorMap[norm];
 
@@ -788,11 +779,6 @@
   }
 
   function getCharLedClass(name) {
-    if (!name) return 'other';
-    const n = name.toLowerCase().trim();
-    if (n.includes('CHARACTER_THREE')) return 'CHARACTER_THREE';
-    if (n.includes('mike')) return 'mike';
-    if (n.includes('sylnae')) return 'sylnae';
     return 'other';
   }
 
@@ -2673,7 +2659,7 @@
       <p style="color:var(--text-dim);font-size:13px;line-height:1.5">
         Renseigne <b>ta propre application EVE</b> (developers.eveonline.com).
         L'exe n'embarque aucun secret. Le callback est
-        <code>http://127.0.0.1:8765/callback</code>.
+        <code>http://127.0.0.1:8766/callback</code>.
       </p>
       <div class="cfg-row firstrun">
         <label>CLIENT_ID</label>
@@ -2696,7 +2682,7 @@
 <div id="eve-map-overlay" class="eve-map-overlay" aria-hidden="true">
   <section class="eve-map-dialog" role="dialog" aria-modal="true" aria-labelledby="eve-map-title">
     <header class="eve-map-header"><div><div class="eve-map-kicker">OFFLINE NAVIGATION</div><h2 id="eve-map-title">New Eden</h2></div><button class="modal-x" onclick="closeEveMap()" aria-label="Close map">&times;</button></header>
-    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><button class="btn mini" id="eve-map-fit">Galaxy view</button></div>
+    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><span class="eve-live-divider">LIVE DATA</span><label title="Public ESI traffic distributed across gates as an estimate"><input type="checkbox" id="eve-map-traffic"> Traffic flow</label><label><input type="checkbox" id="eve-map-danger"> Danger</label><span class="eve-live-divider">INFLUENCE</span><label><input type="checkbox" id="eve-map-sovereignty"> Player Sov</label><small id="eve-map-sovereignty-state" class="eve-map-overlay-state">off</small><label><input type="checkbox" id="eve-map-empires"> Empires &amp; NPC</label><select id="eve-map-character" aria-label="Active character"><option value="">All pilots</option></select><button class="btn mini" id="eve-map-fit">Home · New Eden</button></div>
     <main class="eve-map-content"><div id="eve-map-canvas" class="eve-map-canvas"><div class="eve-map-status">Loading topology…</div></div><aside id="eve-map-panel" class="eve-map-panel"><div class="eve-map-empty">Select a system.</div><div class="eve-map-route"><input id="eve-route-from" placeholder="From (ID or system)"><input id="eve-route-to" placeholder="To (ID or system)"><button class="btn mini" id="eve-map-route">Route</button><div id="eve-route-result"></div></div></aside></main>
   </section>
 </div>

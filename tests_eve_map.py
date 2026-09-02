@@ -3,8 +3,10 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from eve_map_service import EveMapService
+from eve_map_intel_service import EveMapIntelService
 from tools.build_eve_map import build_dataset
 
 
@@ -15,10 +17,10 @@ class EveMapBuilderTests(unittest.TestCase):
             archive = root / "sde.zip"
             output = root / "eve_map.json"
             payloads = {
-                "fsd/universe/regions.jsonl": [{"region_id": 10000002, "name": "The Forge"}],
+                "fsd/universe/regions.jsonl": [{"region_id": 10000002, "name": "The Forge", "faction_id": 500001}],
                 "fsd/universe/constellations.jsonl": [{"constellation_id": 20000020, "name": "Kimotoro", "region_id": 10000002}],
                 "fsd/universe/systems.jsonl": [
-                    {"solar_system_id": 30000142, "name": "Jita", "security_status": 0.9, "constellation_id": 20000020, "region_id": 10000002, "position": {"x": 1.0, "y": 2.0, "z": 3.0}},
+                    {"solar_system_id": 30000142, "name": "Jita", "security_status": 0.9, "faction_id": 500001, "constellation_id": 20000020, "region_id": 10000002, "position": {"x": 1.0, "y": 2.0, "z": 3.0}},
                     {"solar_system_id": 30000144, "name": "Perimeter", "security_status": 0.9, "constellation_id": 20000020, "region_id": 10000002, "position": {"x": 4.0, "y": 5.0, "z": 6.0}},
                 ],
                 "fsd/universe/stargates.jsonl": [
@@ -36,6 +38,8 @@ class EveMapBuilderTests(unittest.TestCase):
 
             self.assertEqual(result["systems"], 2)
             self.assertEqual(dataset["systems"][0]["position_m"], {"x": 1.0, "y": 2.0, "z": 3.0})
+            self.assertEqual(dataset["systems"][0]["faction_id"], 500001)
+            self.assertEqual(dataset["systems"][1]["faction_id"], 500001)
             self.assertEqual(len(dataset["gates"]), 1)
 
 
@@ -57,9 +61,98 @@ class EveMapServiceTests(unittest.TestCase):
 
             self.assertEqual(route["systems"], [1, 2])
             self.assertEqual(route["jumps"], 1)
+            self.assertEqual(service.find_route(1, 2, min_security=0.5)["error"], "unsafe_endpoint")
             self.assertEqual(service.distance_m(1, 2), 5.0)
             self.assertIsNone(service.get_system(999))
             self.assertEqual(service.find_route(1, 999)["error"], "unknown_system")
+
+
+class EveMapIntelServiceTests(unittest.TestCase):
+    def test_sovereignty_uses_current_public_transport_without_compatibility_header(self):
+        class Response:
+            def read(self):
+                return b'[{"system_id":30000142,"alliance_id":99000001}]'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = EveMapIntelService(Path(directory) / "intel.json")
+            with patch("eve_map_intel_service.urllib.request.urlopen", return_value=Response()) as fetch, patch("mmd_esi._get", side_effect=AssertionError("legacy compatibility transport must not serve sovereignty")):
+                rows = service._fetch_esi("/sovereignty/map/")
+
+        self.assertEqual(rows[0]["alliance_id"], 99000001)
+        request = fetch.call_args.args[0]
+        self.assertIsNone(request.get_header("X-compatibility-date"))
+
+    def test_live_intel_is_cached_and_stale_cache_survives_esi_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "intel.json"
+            payloads = {
+                "/universe/system_jumps/": [{"system_id": 30000142, "ship_jumps": 42315}],
+                "/universe/system_kills/": [{"system_id": 30000142, "ship_kills": 7, "pod_kills": 2, "npc_kills": 183}],
+            }
+            calls = []
+            service = EveMapIntelService(cache_path, now=lambda: 1_000, fetch_json=lambda endpoint: calls.append(endpoint) or payloads[endpoint])
+            live = service.get_live_intel()
+            self.assertEqual(live["state"], "live")
+            self.assertEqual(live["systems"]["30000142"]["ship_jumps"], 42315)
+            self.assertGreater(live["systems"]["30000142"]["danger"], 0)
+            self.assertEqual(len(calls), 2)
+            cached = EveMapIntelService(cache_path, now=lambda: 1_300, fetch_json=lambda _: self.fail("fresh cache must not fetch"))
+            self.assertEqual(cached.get_live_intel()["state"], "fresh")
+            stale = EveMapIntelService(cache_path, now=lambda: 1_700, fetch_json=lambda _: (_ for _ in ()).throw(OSError("offline")))
+            self.assertEqual(stale.get_live_intel()["state"], "stale")
+
+    def test_sovereignty_is_cached_and_keeps_ownership_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "intel.json"
+            calls = []
+            payload = [{"system_id": 30000142, "alliance_id": 99000001, "corporation_id": 98000001}, {"system_id": 30000001, "faction_id": 500007}]
+            service = EveMapIntelService(cache_path, now=lambda: 2_000, fetch_json=lambda endpoint: calls.append(endpoint) or payload)
+            live = service.get_sovereignty()
+            self.assertEqual(live["systems"]["30000142"]["alliance_id"], 99000001)
+            self.assertEqual(live["systems"]["30000001"]["faction_id"], 500007)
+            cached = EveMapIntelService(cache_path, now=lambda: 2_200, fetch_json=lambda _: self.fail("fresh sovereignty cache must not fetch"))
+            self.assertEqual(cached.get_sovereignty()["state"], "fresh")
+            self.assertEqual(calls, ["/sovereignty/map/"])
+
+    def test_entity_names_are_resolved_lazily_and_cached(self):
+        with tempfile.TemporaryDirectory() as directory:
+            calls = []
+            service = EveMapIntelService(
+                Path(directory) / "intel.json",
+                now=lambda: 2_000,
+                fetch_names=lambda ids: calls.append(ids) or [{"id": 99000001, "name": "Example Alliance", "category": "alliance"}],
+            )
+            live = service.get_entity_names([99000001])
+            self.assertEqual(live["names"]["99000001"]["name"], "Example Alliance")
+            cached = EveMapIntelService(Path(directory) / "intel.json", now=lambda: 2_100, fetch_names=lambda _: self.fail("fresh entity-name cache must not fetch"))
+            self.assertEqual(cached.get_entity_names([99000001])["state"], "fresh")
+            self.assertEqual(calls, [[99000001]])
+
+    def test_kill_attackers_use_cached_kill_and_lazy_names(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "intel.json"
+            service = EveMapIntelService(
+                path,
+                now=lambda: 2_000,
+                fetch_names=lambda ids: [
+                    {"id": 9001, "name": "Hunter", "category": "character"},
+                    {"id": 587, "name": "Rifter", "category": "inventory_type"},
+                ],
+            )
+            service._write_cache({"zkill": {"30000142": {"updated_at": 2_000, "kills": [{
+                "killmail_id": 42, "attacker_count": 1,
+                "attackers": [{"character_id": 9001, "ship_type_id": 587, "final_blow": True, "damage_done": 1234}],
+            }]}}})
+            detail = service.get_kill_attackers(30000142, 42)
+            self.assertEqual(detail["attackers"][0]["pilot_name"], "Hunter")
+            self.assertEqual(detail["attackers"][0]["ship_name"], "Rifter")
+            self.assertTrue(detail["attackers"][0]["final_blow"])
 
 
 if __name__ == "__main__":

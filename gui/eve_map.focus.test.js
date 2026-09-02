@@ -9,27 +9,32 @@ function element() {
   return {
     style: {}, value: '', textContent: '', innerHTML: '', clientWidth: 900, clientHeight: 600,
     children: [], classList: { add() {}, remove() {} }, setAttribute() {}, appendChild(child) { this.children.push(child); },
-    querySelector() { return null; }, insertAdjacentHTML() {}, addEventListener(type, callback) { listeners[type] = callback; },
+    querySelector() { return null; }, insertAdjacentHTML(_, html) { this.innerHTML += html; }, addEventListener(type, callback) { listeners[type] = callback; },
     dispatch(type, event = {}) { listeners[type]?.(event); },
   };
 }
 
 test('search result focuses the rendered node coordinates', async () => {
-  const elements = new Map(['eve-map-overlay', 'eve-map-canvas', 'eve-map-panel', 'eve-route-from', 'eve-map-search', 'eve-map-results', 'eve-map-fit', 'eve-map-gates', 'eve-map-route', 'eve-route-to', 'eve-route-result'].map(id => [id, element()]));
+  const elements = new Map(['eve-map-overlay', 'eve-map-canvas', 'eve-map-panel', 'eve-route-from', 'eve-map-search', 'eve-map-results', 'eve-map-fit', 'eve-map-gates', 'eve-map-traffic', 'eve-map-danger', 'eve-map-character', 'eve-map-route', 'eve-route-to', 'eve-route-result'].map(id => [id, element()]));
   const documentListeners = {};
   const graph = {
-    backgroundColor() { return this; }, graphData(data) { this.nodes = data.nodes; return this; }, nodeId() { return this; }, nodeLabel() { return this; }, nodeColor() { return this; }, nodeVal() { return this; }, nodeRelSize() { return this; }, nodeResolution() { return this; }, nodeOpacity() { return this; }, nodeVisibility() { return this; }, linkVisibility() { return this; }, linkColor() { return this; }, linkOpacity() { return this; }, linkWidth() { return this; }, enableNodeDrag() { return this; }, nodePositionUpdate() { return this; }, onNodeClick() { return this; }, onNodeHover() { return this; }, width() { return this; }, height() { return this; }, d3Force() { return this; }, cooldownTicks() { return this; }, zoomToFit() {}, resumeAnimation() {}, pauseAnimation() {},
+    backgroundColor() { return this; }, graphData(data) { this.nodes = data.nodes; return this; }, nodeId() { return this; }, nodeLabel() { return this; }, nodeColor() { return this; }, nodeVal() { return this; }, nodeRelSize() { return this; }, nodeResolution() { return this; }, nodeOpacity() { return this; }, nodeVisibility() { return this; }, linkVisibility() { return this; }, linkColor() { return this; }, linkOpacity() { return this; }, linkWidth() { return this; }, enableNodeDrag() { return this; }, nodePositionUpdate() { return this; }, onNodeClick() { return this; }, onNodeRightClick() { return this; }, onNodeHover() { return this; }, width(value) { if (value !== undefined) this.widthValue = value; return this; }, height(value) { if (value !== undefined) this.heightValue = value; return this; }, d3Force() { return this; }, cooldownTicks() { return this; }, zoomToFit() {}, resumeAnimation() {}, pauseAnimation() {},
     cameraPosition(position, target) { this.lastCamera = { position, target }; },
   };
   const dataset = { systems: [
     { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 0, y: 0, z: 0 } },
     { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 1, y: 0, z: 0 } },
   ], gates: [{ source: 30000142, target: 30000144 }] };
-  const window = { api: { async get_eve_map_data() { return { ok: true, data: dataset }; } }, ForceGraph3D: () => () => graph };
-  const context = vm.createContext({ window, document: { getElementById(id) { return elements.get(id); }, querySelectorAll() { return []; }, createElement() { return element(); }, addEventListener(type, callback) { documentListeners[type] = callback; } }, ForceGraph3D: window.ForceGraph3D, requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, setTimeout() {}, performance: { now() { return 100; } }, Math, Map, Set, Object, String });
+  let onMapResize;
+  class ResizeObserver { constructor(callback) { onMapResize = callback; } observe() {} disconnect() {} }
+  const window = { __eveMapTest: {}, ResizeObserver, api: { async get_eve_map_data() { return { ok: true, data: dataset }; }, async get_eve_map_live_intel() { return { ok: true, state: 'live', age_seconds: 0, systems: { 30000142: { ship_jumps: 42315, ship_kills: 7, pod_kills: 2, npc_kills: 183, danger: 63, danger_band: 'orange' } } }; }, async get_eve_map_character_positions() { return { ok: true, positions: [{ character_id: 1, name: 'Pilot', system_id: 30000142 }, { character_id: 2, name: 'Wingmate', system_id: 30000142 }] }; }, async find_eve_route(source, target) { return { ok: true, data: { systems: [source, target], jumps: 1 } }; } }, ForceGraph3D: () => () => graph };
+  const context = vm.createContext({ window, document: { readyState: 'loading', getElementById(id) { return elements.get(id); }, querySelectorAll() { return []; }, createElement() { return element(); }, addEventListener(type, callback) { documentListeners[type] = callback; } }, ForceGraph3D: window.ForceGraph3D, requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, setTimeout() {}, performance: { now() { return 100; } }, Math, Map, Set, Object, String });
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), context);
   documentListeners.DOMContentLoaded();
   await window.openEveMap();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(window.__eveMapTest.formatKillDate('2026-09-02T17:34:21Z'), '2026-09-02 · 17:34 UTC', 'Latest kills conserve date et heure UTC complètes');
+  assert.match(window.__eveMapTest.killLocation({ solar_system_id: 30000142 }), /Jita · Kimotoro, The Forge/, 'Latest kills affiche le système, la constellation et la région');
   elements.get('eve-map-search').value = 'ji';
   elements.get('eve-map-search').dispatch('input', { target: elements.get('eve-map-search') });
   assert.ok(graph.nodes.find(node => node.id === 30000142 && Number.isFinite(node.x)));
@@ -37,4 +42,109 @@ test('search result focuses the rendered node coordinates', async () => {
 
   assert.equal(graph.lastCamera.target.id, 30000142);
   assert.ok(Object.values(graph.lastCamera.position).every(Number.isFinite));
+  elements.get('eve-map-canvas').clientWidth = 1200; elements.get('eve-map-canvas').clientHeight = 750; onMapResize();
+  assert.equal(graph.widthValue, 1200); assert.equal(graph.heightValue, 750);
+  assert.match(elements.get('eve-map-panel').innerHTML, /LIVE INTEL/);
+  assert.match(elements.get('eve-map-panel').innerHTML, /Pilotes actifs/);
+  assert.match(elements.get('eve-map-panel').innerHTML, /<br>/);
+  assert.notEqual(window.__eveMapTest.characterColor({ character_id: 1 }), window.__eveMapTest.characterColor({ character_id: 2 }));
+  window.setEveMapOrigin(30000142);
+  window.setEveMapDestination(30000144);
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.match(elements.get('eve-route-result').innerHTML, /1 saut/);
+  assert.match(elements.get('eve-route-result').innerHTML, /eve-route-square/);
+  assert.match(elements.get('eve-route-result').innerHTML, /Ship kills: 7/);
+});
+
+test('viewport clipping retains the visible portion of a gate crossing the screen edge', () => {
+  const window = { __eveMapTest: {} };
+  const context = vm.createContext({ window, document: { readyState: 'loading', addEventListener() {} }, Math, Map, Set, Object, String });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), context);
+  const clipped = window.__eveMapTest.clipSegmentToViewport({ x: -40, y: 50 }, { x: 140, y: 50 }, 100, 100);
+  assert.deepEqual(JSON.parse(JSON.stringify(clipped)), { a: { x: 0, y: 50 }, b: { x: 100, y: 50 } });
+  assert.equal(window.__eveMapTest.clipSegmentToViewport({ x: -40, y: -10 }, { x: -5, y: -10 }, 100, 100), null);
+  const shot = window.__eveMapTest.galaxyShot([{ x: -50, y: 0, z: -20 }, { x: 50, y: 10, z: 20 }]);
+  assert.ok(shot.position.y > shot.target.y, 'la vue initiale se place au-dessus de la galaxie');
+  assert.ok(shot.position.y - shot.target.y > 180, 'la vue initiale reste éloignée');
+  const jitaAnchor = { id: 30000142, name: 'Jita', x: 12, y: 5, z: -7 };
+  const jitaShot = window.__eveMapTest.galaxyShot([{ x: -50, y: 0, z: -20 }, jitaAnchor, { x: 50, y: 10, z: 20 }]);
+  assert.equal(jitaShot.target, jitaAnchor, 'la vue Home est ancrée sur Jita');
+  const focusPose = window.__eveMapTest.cameraPose({ x: 0, y: 0, z: 0 }, 100);
+  const homeDirection = { x: jitaShot.position.x - jitaShot.target.x, y: jitaShot.position.y - jitaShot.target.y, z: jitaShot.position.z - jitaShot.target.z };
+  assert.ok(Math.abs(focusPose.x / focusPose.y - homeDirection.x / homeDirection.y) < 1e-9 && Math.abs(focusPose.z / focusPose.y - homeDirection.z / homeDirection.y) < 1e-9, 'les focus système restent dans le plan de caméra New Eden');
+  const lowOnly = { securityCounts: { high: 0, low: 4, null: 0 } };
+  assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: false, null: false }), false);
+  assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: true, null: false }), true);
+  const regionFocus = { kind: 'region', area: { id: 7 } };
+  assert.equal(window.__eveMapTest.isAreaMember({ region_id: 7, constellation_id: 3 }, regionFocus), true);
+  assert.equal(window.__eveMapTest.isAreaMember({ region_id: 8, constellation_id: 3 }, regionFocus), false);
+  assert.equal(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 7 }, regionFocus), '#36d7a0');
+  assert.equal(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 8 }, regionFocus), '#23675b');
+  assert.ok(window.__eveMapTest.characterMarkerScale(1800) > window.__eveMapTest.systemObjectScale(1800), 'le sélecteur de personnage reste prioritaire à distance');
+  assert.ok(window.__eveMapTest.systemObjectScale(5000) <= 1.05, 'la croissance des nœuds système est fortement plafonnée');
+  assert.ok(window.__eveMapTest.systemObjectScale(5000) / window.__eveMapTest.systemObjectScale(200) < 1.25, 'la compensation système augmente très lentement au dézoom');
+  assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(300, 'sovereignty'), 'la souveraineté se regroupe visuellement à distance');
+  assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(3000, 'empire'), 'la souveraineté garde une présence distincte au dézoom');
+  const empireLayers = window.__eveMapTest.influenceLayers({ faction_id: 500001 }, { sovereignty: false, empires: true }, { alliance_id: 99000001 });
+  assert.deepEqual(JSON.parse(JSON.stringify(empireLayers)), [{ id: 500001, alpha: .24, kind: 'empire', offset: 0 }], 'l’Empire/NPC SDE reste visible même si le cache Sov connaît un propriétaire');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.influenceLayers({ security: -.4 }, { sovereignty: true, empires: false }, { faction_id: 500007 }))), [], 'Player Sov exclut les propriétaires NPC/pirates même en null-sec');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.influenceLayers({ security: .9 }, { sovereignty: true, empires: false }, { alliance_id: 99000001 }))), [], 'Player Sov exclut le high-sec');
+  assert.equal(window.__eveMapTest.influenceLayers({ security: -.4 }, { sovereignty: true, empires: false }, { alliance_id: 99000001 })[0].kind, 'sovereignty', 'Player Sov conserve les alliances en null-sec');
+  const empireRegional = window.__eveMapTest.influenceOverlayStyle(700, 'empire');
+  const empireGalaxy = window.__eveMapTest.influenceOverlayStyle(3000, 'empire');
+  const sovereigntyRegional = window.__eveMapTest.influenceOverlayStyle(700, 'sovereignty');
+  assert.ok(empireRegional.radius >= 5 && empireRegional.opacity >= .5, 'Empire/NPC reste nettement lisible en vue rapprochée');
+  assert.ok(sovereigntyRegional.radius > empireRegional.radius && sovereigntyRegional.opacity > empireRegional.opacity, 'Player Sov est plus large et opaque qu’Empire/NPC en vue rapprochée');
+  assert.ok(empireGalaxy.radius > empireRegional.radius && empireGalaxy.opacity >= .32, 'Empire/NPC garde une masse lisible à l’échelle galaxie');
+  const inferredGateTraffic = window.__eveMapTest.estimateGateTraffic({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
+  assert.equal(inferredGateTraffic, 100, 'le trafic de gate est une estimation équilibrée depuis les deux systèmes');
+  const directionalGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
+  assert.deepEqual(JSON.parse(JSON.stringify(directionalGateFlows)), { sourceToTarget: 100, targetToSource: 100 }, 'chaque sens conserve sa propre estimation de trafic');
+  const asymmetricGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 1], [2, 4]]), new Map([[1, 1200], [2, 200]]));
+  assert.deepEqual(JSON.parse(JSON.stringify(asymmetricGateFlows)), { sourceToTarget: 1200, targetToSource: 50 }, 'les deux directions ne sont pas artificiellement fusionnées');
+  assert.equal(window.__eveMapTest.trafficParticlePlan(100).count, 1, '1–100 sauts utilise une particule');
+  assert.equal(window.__eveMapTest.trafficParticlePlan(101).count, 2, '101–1000 sauts utilise deux particules');
+  assert.equal(window.__eveMapTest.trafficParticlePlan(1001).count, 3, '1001+ sauts utilise trois particules');
+  assert.match(window.__eveMapTest.trafficParticlePlan(100).particles[0].color, /hsl\(12 /, 'le premier palier atteint un rouge doux à 100');
+  assert.match(window.__eveMapTest.trafficParticlePlan(101).particles[1].color, /hsl\(142 /, 'le deuxième palier commence vert à 101');
+  assert.match(window.__eveMapTest.trafficParticlePlan(1000).particles[1].color, /hsl\(12 /, 'le deuxième palier atteint le rouge doux à 1000');
+  assert.match(window.__eveMapTest.trafficParticlePlan(1001).particles[2].color, /hsl\(142 /, 'le troisième palier commence vert à 1001');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.trafficPacketOffsets(3))), [0, .052, .104], 'les trois particules circulent en paquet séquentiel');
+  assert.ok(window.__eveMapTest.trafficParticleSpeed(5000) > window.__eveMapTest.trafficParticleSpeed(10), 'un trafic plus intense accélère son paquet');
+  assert.ok(window.__eveMapTest.trafficParticleProgress(1000, 0, 100, 400) < window.__eveMapTest.trafficParticleProgress(1000, 0, 100, 40), 'une liaison longue prend davantage de temps à parcourir');
+  assert.equal(window.__eveMapTest.shipIconUrl(587), 'https://images.evetech.net/types/587/icon?size=64', 'un type de vaisseau construit son icône publique');
+  assert.equal(window.__eveMapTest.shipIconUrl('not-a-type'), null, 'une valeur de type invalide ne devient jamais une URL image');
+  const attackerMarkup = window.__eveMapTest.attackerPopoverMarkup({ total_attackers: 2, attackers: [{ pilot_name: 'Hunter', ship_name: 'Rifter', ship_type_id: 587, final_blow: true, damage_done: 1234 }] });
+  assert.match(attackerMarkup, /Hunter/);
+  assert.match(attackerMarkup, /Rifter/);
+  assert.match(attackerMarkup, /final blow/);
+  const nearCamera = { projectionMatrix: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -1, 0, 0, 0, 1] } };
+  const nearNode = { geometry: { boundingSphere: { radius: 1 } } };
+  const nearScale = window.__eveMapTest.cappedSystemObjectScale(nearNode, 10, nearCamera, 600);
+  assert.ok(nearScale * 600 / (2 * 10) <= 7.001, 'un système proche ne dépasse jamais le plafond écran');
+  const extremeNearScale = window.__eveMapTest.cappedSystemObjectScale(nearNode, .01, nearCamera, 600);
+  assert.ok(extremeNearScale * 600 / (.01 * 2) <= 7.001, 'le plafond reste effectif au zoom extrême');
+  const farScale = window.__eveMapTest.cappedSystemObjectScale(nearNode, 5000, nearCamera, 600);
+  assert.ok(farScale * 600 / (5000 * 2) <= .161, 'la vue galaxie très éloignée réduit encore les nœuds');
+  const localScale = window.__eveMapTest.cappedSystemObjectScale(nearNode, 100, nearCamera, 600);
+  assert.ok(localScale * 600 / 200 > farScale * 600 / 10000 * 12, 'le voisinage caméra garde une présence nettement supérieure au fond');
+  const renderedNode = { x: 0, y: 0, z: 0, __threeObj: { geometry: { boundingSphere: { radius: 1 } }, scale: { setScalar(value) { this.value = value; } } } };
+  const movingCamera = { position: { x: 10, y: 0, z: 0 }, projectionMatrix: nearCamera.projectionMatrix };
+  window.__eveMapTest.updateSystemScreenScales([renderedNode], movingCamera, 600);
+  assert.ok(renderedNode.__threeObj.scale.value * 600 / 20 <= 7.001, 'la boucle visuelle applique le plafond au mesh rendu');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.buildSkyStars(3))), JSON.parse(JSON.stringify(window.__eveMapTest.buildSkyStars(3))));
+  assert.equal(window.__eveMapTest.buildSkyStars().length, 3000, 'le dôme conserve une densité suffisante hors bande galactique');
+  const textureDirection = window.__eveMapTest.skyTextureDirection({ x: 1, y: 0, z: 0 });
+  assert.ok(Math.abs(textureDirection.x) < 1e-9 && Math.abs(textureDirection.z - 1) < 1e-9, 'la panoramique reçoit le quart de tour autour de l’axe vertical');
+  const restoredDirection = window.__eveMapTest.worldSkyDirection(textureDirection);
+  assert.ok(Math.abs(restoredDirection.x - 1) < 1e-9 && Math.abs(restoredDirection.z) < 1e-9, 'le repère texture et le repère monde restent inverses');
+  const skyCamera = { matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 99, -22, 8, 1] }, projectionMatrix: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -1, 0, 0, 0, 1] } };
+  const movedSkyCamera = { matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -300, 17, 40, 1] }, projectionMatrix: skyCamera.projectionMatrix };
+  assert.equal(window.__eveMapTest.skyCameraKey(skyCamera, 800, 600, 1), window.__eveMapTest.skyCameraKey(movedSkyCamera, 800, 600, 1), 'une translation ne recalcule pas la sphère infiniment lointaine');
+  const identityCamera = { matrixWorldInverse: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }, projectionMatrix: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -1, 0, 0, 0, 1] } };
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.projectSkyDirection({ x: 0, y: 0, z: -1 }, identityCamera, 800, 600))), { x: 400, y: 300 });
+  assert.equal(window.__eveMapTest.projectSkyDirection({ x: 0, y: 0, z: 1 }, identityCamera, 800, 600), null);
+  const gateCamera = { ...identityCamera, near: .1 };
+  const clippedGate = window.__eveMapTest.projectGateSegment({ x: -.5, y: 0, z: -2 }, { x: 5, y: 0, z: 1 }, gateCamera, 800, 600);
+  assert.deepEqual(JSON.parse(JSON.stringify(clippedGate)), { a: { x: 333.33333333333337, y: 300 }, b: { x: 800, y: 300 } }, 'une gate qui franchit le plan caméra reste visible jusqu’au bord');
 });

@@ -37,11 +37,15 @@ class EveMapService:
             return None
         return math.dist(tuple(source["position_m"].values()), tuple(target["position_m"].values()))
 
-    def find_route(self, source_id, target_id):
+    def find_route(self, source_id, target_id, min_security=None):
         self._load()
         source_id, target_id = int(source_id), int(target_id)
         if source_id not in self._systems or target_id not in self._systems:
             return {"error": "unknown_system", "systems": [], "jumps": 0}
+        if min_security is not None:
+            min_security = float(min_security)
+            if any(float(self._systems[system_id].get("security", 0)) < min_security for system_id in (source_id, target_id)):
+                return {"error": "unsafe_endpoint", "systems": [], "jumps": 0}
         queue, previous = deque([source_id]), {source_id: None}
         while queue:
             current = queue.popleft()
@@ -53,6 +57,8 @@ class EveMapService:
                 route.reverse()
                 return {"systems": route, "jumps": len(route) - 1}
             for neighbor in sorted(self._adjacency[current]):
+                if min_security is not None and float(self._systems[neighbor].get("security", 0)) < min_security:
+                    continue
                 if neighbor not in previous:
                     previous[neighbor] = current
                     queue.append(neighbor)
@@ -66,5 +72,5 @@ def get_map_data():
     return _default_service.get_map_data()
 
 
-def find_route(source_id, target_id):
-    return _default_service.find_route(source_id, target_id)
+def find_route(source_id, target_id, min_security=None):
+    return _default_service.find_route(source_id, target_id, min_security)

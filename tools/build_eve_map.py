@@ -34,7 +34,7 @@ def build_dataset(archive_path, output_path, source_url="official CCP SDE"):
     """Convert CCP JSONL SDE data to a browser-friendly system/gate graph."""
     archive_path, output_path = Path(archive_path), Path(output_path)
     with zipfile.ZipFile(archive_path) as bundle:
-        regions = {int(_first(row, "region_id", "regionID", "_key")): _first(row, "name", default="Unknown") for row in _rows(bundle, "regions.jsonl")}
+        regions = {int(_first(row, "region_id", "regionID", "_key")): row for row in _rows(bundle, "regions.jsonl")}
         constellations = {int(_first(row, "constellation_id", "constellationID", "_key")): row for row in _rows(bundle, "constellations.jsonl")}
         raw_systems = _rows(bundle, "solarsystems.jsonl") or _rows(bundle, "systems.jsonl")
         raw_gates = _rows(bundle, "stargates.jsonl")
@@ -50,7 +50,9 @@ def build_dataset(archive_path, output_path, source_url="official CCP SDE"):
         constellation_id = _first(row, "constellation_id", "constellationID")
         constellation = constellations.get(int(constellation_id)) if constellation_id is not None else None
         region_id = _first(row, "region_id", "regionID", default=_first(constellation or {}, "region_id", "regionID"))
-        systems.append({"id": system_id, "name": _first(row, "name", "solarSystemName", default=str(system_id)), "security": float(_first(row, "security_status", "securityStatus", default=0)), "region_id": region_id, "region": regions.get(int(region_id), "Unknown") if region_id is not None else "Unknown", "constellation_id": constellation_id, "constellation": _first(constellation or {}, "name", default="Unknown"), "position_m": point})
+        region = regions.get(int(region_id)) if region_id is not None else None
+        faction_id = _first(row, "faction_id", "factionID", default=_first(constellation or {}, "faction_id", "factionID", default=_first(region or {}, "faction_id", "factionID")))
+        systems.append({"id": system_id, "name": _first(row, "name", "solarSystemName", default=str(system_id)), "security": float(_first(row, "security_status", "securityStatus", default=0)), "faction_id": int(faction_id) if faction_id is not None else None, "region_id": region_id, "region": _first(region or {}, "name", default="Unknown"), "constellation_id": constellation_id, "constellation": _first(constellation or {}, "name", default="Unknown"), "position_m": point})
         positions[system_id] = point
         for gate_id in _first(row, "stargates", "stargate_ids", "stargateIDs", default=[]) or []:
             gate_systems[int(gate_id)] = system_id
