@@ -251,6 +251,44 @@ def _latest_my_orders_file():
 
 
 class Api:
+    def _combat_ship_name(self, ship_type_id):
+        if not ship_type_id:
+            return "Vaisseau inconnu"
+        cache = getattr(self, "_combat_ship_names", None)
+        if cache is None:
+            cache = self._combat_ship_names = {}
+        ship_type_id = int(ship_type_id)
+        if ship_type_id not in cache:
+            try:
+                import mmd_core
+                cache[ship_type_id] = mmd_core.iname(ship_type_id)
+            except Exception:
+                cache[ship_type_id] = f"Vaisseau {ship_type_id}"
+        return cache[ship_type_id]
+
+    def _describe_combat_markers(self, response):
+        """Resolve local ship labels once; never turn map polling into ESI polling."""
+        for marker in response.get("markers", []):
+            if marker.get("victim_ship_type_id") and not marker.get("victim_ship_name"):
+                marker["victim_ship_name"] = self._combat_ship_name(marker["victim_ship_type_id"])
+        return response
+
+    def _log_combat_marker(self, marker):
+        """Render one concise live-combat event in MMD's existing bottom log."""
+        try:
+            import eve_map_service
+            system = eve_map_service._default_service.get_system(marker["system_id"]) or {}
+            system_name = system.get("name", f"System {marker['system_id']}")
+        except Exception:
+            system_name = f"System {marker.get('system_id', '?')}"
+        ship_name = self._combat_ship_name(marker.get("victim_ship_type_id"))
+        marker["victim_ship_name"] = ship_name
+        attackers = int(marker.get("attacker_count", 0))
+        self.log_event(
+            f"INTEL · {system_name} · {ship_name} détruit · {attackers} attaquant{'s' if attackers != 1 else ''}",
+            "watch",
+        )
+
     def get_eve_map_data(self):
         """Expose the bundled New Eden topology without ESI or OAuth access."""
         try:
@@ -286,7 +324,7 @@ class Api:
         """Return the bounded global R2Z2 feed used by the visible map only."""
         try:
             import eve_map_kill_stream
-            return eve_map_kill_stream.get_recent_markers()
+            return self._describe_combat_markers(eve_map_kill_stream.get_recent_markers())
         except Exception as exc:
             return {"ok": False, "markers": [], "state": "unavailable", "error": str(exc)}
 
@@ -294,6 +332,7 @@ class Api:
         """Avoid consuming the global zKillboard stream while the map is closed."""
         try:
             import eve_map_kill_stream
+            eve_map_kill_stream.set_marker_handler(self._log_combat_marker if active else None)
             eve_map_kill_stream.set_active(bool(active))
             return {"ok": True}
         except Exception as exc:

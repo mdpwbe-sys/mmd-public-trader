@@ -12,7 +12,9 @@ import urllib.request
 
 R2Z2_BASE = "https://r2z2.zkillboard.com/ephemeral"
 BOOTSTRAP_SEQUENCES = 96
-MARKER_TTL_SECONDS = 5 * 60
+# Tactical combat remains visible for the last 30 minutes.  The renderer
+# condenses concurrent kills per system, so a busier period costs no more draw calls.
+MARKER_TTL_SECONDS = 30 * 60
 EMPTY_SEQUENCE_DELAY_SECONDS = 6
 SEQUENCE_DELAY_SECONDS = 0.14  # safely below R2Z2's documented 15 req/s limit
 USER_AGENT = os.environ.get("MMD_MAP_USER_AGENT", "EVE-Market-Manager/1.0 (tactical combat stream)")
@@ -36,11 +38,15 @@ def marker_from_killmail(payload: dict, *, now: float) -> dict | None:
     if not happened_at or now - happened_at > MARKER_TTL_SECONDS or happened_at > now + 60:
         return None
     try:
+        victim = killmail.get("victim") if isinstance(killmail.get("victim"), dict) else {}
+        attackers = killmail.get("attackers") if isinstance(killmail.get("attackers"), list) else []
         return {
             "killmail_id": int(killmail_id),
             "system_id": int(system_id),
             "happened_at": happened_at,
             "value": max(0, int((payload.get("zkb") or {}).get("totalValue", 0))),
+            "victim_ship_type_id": int(victim["ship_type_id"]) if victim.get("ship_type_id") else None,
+            "attacker_count": len(attackers),
         }
     except (TypeError, ValueError):
         return None
@@ -49,7 +55,7 @@ def marker_from_killmail(payload: dict, *, now: float) -> dict | None:
 class EveMapKillStream:
     """A single background consumer with a five-minute read-only interface."""
 
-    def __init__(self, *, fetch_json=None, now=time.time):
+    def __init__(self, *, fetch_json=None, now=time.time, on_marker=None):
         self.fetch_json = fetch_json or self._fetch_json
         self.now = now
         self._lock = threading.RLock()
@@ -57,6 +63,8 @@ class EveMapKillStream:
         self._thread: threading.Thread | None = None
         self._sequence: int | None = None
         self._markers: dict[int, dict] = {}
+        self._on_marker = on_marker
+        self._bootstrap_until: int | None = None
         self._state = "off"
         self._error: str | None = None
 
@@ -83,6 +91,11 @@ class EveMapKillStream:
         with self._lock:
             self._state = "off"
 
+    def set_marker_handler(self, handler) -> None:
+        """Install the UI notification sink without coupling this worker to pywebview."""
+        with self._lock:
+            self._on_marker = handler
+
     def recent_markers(self) -> dict:
         self.activate()
         now = self.now()
@@ -104,13 +117,24 @@ class EveMapKillStream:
                 self._state, self._error = "unavailable", f"R2Z2 HTTP {status}"
             return False
         self._sequence = max(1, latest - BOOTSTRAP_SEQUENCES)
+        self._bootstrap_until = latest
         return True
 
-    def _accept(self, payload: dict) -> None:
+    def _accept(self, payload: dict, *, publish: bool = False) -> None:
         marker = marker_from_killmail(payload, now=self.now())
         if marker:
+            handler = None
             with self._lock:
+                is_new = marker["killmail_id"] not in self._markers
                 self._markers[marker["killmail_id"]] = marker
+                if publish and is_new:
+                    handler = self._on_marker
+            if handler:
+                try:
+                    handler(marker)
+                except Exception:
+                    # A UI notification cannot compromise the bounded feed.
+                    pass
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -119,7 +143,8 @@ class EveMapKillStream:
                 continue
             status, payload = self.fetch_json(f"{R2Z2_BASE}/{self._sequence}.json")
             if status == 200 and isinstance(payload, dict):
-                self._accept(payload)
+                publish = self._bootstrap_until is not None and self._sequence >= self._bootstrap_until
+                self._accept(payload, publish=publish)
                 self._sequence += 1
                 with self._lock:
                     self._state, self._error = "live", None
@@ -147,3 +172,7 @@ def set_active(active: bool) -> None:
         _default_stream.activate()
     else:
         _default_stream.deactivate()
+
+
+def set_marker_handler(handler) -> None:
+    _default_stream.set_marker_handler(handler)

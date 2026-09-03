@@ -134,6 +134,20 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.ok(empireGalaxy.radius > empireRegional.radius && empireGalaxy.opacity >= .32, 'Empire/NPC garde une masse lisible à l’échelle galaxie');
   const inferredGateTraffic = window.__eveMapTest.estimateGateTraffic({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
   assert.equal(inferredGateTraffic, 100, 'le trafic de gate est une estimation équilibrée depuis les deux systèmes');
+  const combatGroups = window.__eveMapTest.combatMarkerGroups([
+    { system_id: 30000142, happenedAt: 100, expiresAt: 900_000 },
+    { system_id: 30000142, happenedAt: 110, expiresAt: 900_010 },
+    { system_id: 30000142, happenedAt: 120, expiresAt: 900_020 },
+    { system_id: 30000144, happenedAt: 130, expiresAt: 200 },
+  ], 300);
+  assert.equal(combatGroups.length, 1, 'les kills expirés sont exclus de la fenêtre tactique');
+  assert.equal(combatGroups[0].count, 3, 'les kills récents sont condensés par système');
+  assert.equal(combatGroups[0].value, 0, 'la synthèse agrège aussi la valeur ISK détruite');
+  assert.equal(window.__eveMapTest.combatActivity(0).symbol, '●');
+  assert.equal(window.__eveMapTest.combatActivity(1).symbol, '◉');
+  assert.equal(window.__eveMapTest.combatActivity(3).symbol, '⚠');
+  assert.equal(window.__eveMapTest.combatActivity(7).symbol, '🔥');
+  assert.equal(window.__eveMapTest.combatActivity(10).symbol, '💀');
   const directionalGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
   assert.deepEqual(JSON.parse(JSON.stringify(directionalGateFlows)), { sourceToTarget: 100, targetToSource: 100 }, 'chaque sens conserve sa propre estimation de trafic');
   const asymmetricGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 1], [2, 4]]), new Map([[1, 1200], [2, 200]]));

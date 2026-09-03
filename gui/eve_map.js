@@ -8,7 +8,7 @@
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const CHARACTER_COLORS = ['#66e7f5', '#ffca62', '#e978b1', '#aa8cff', '#7ee6a9', '#ff956e'];
   const CHARACTER_POSITION_POLL_MS = 15_000;
-  const COMBAT_MARKER_TTL_MS = 5 * 60 * 1000;
+  const COMBAT_MARKER_TTL_MS = 30 * 60 * 1000;
   const characterPositionTrackingInterval = visible => visible ? CHARACTER_POSITION_POLL_MS : null;
   const characterColorInfo = character => {
     const dashboardColor = window.getCharColorInfo?.(character?.name);
@@ -961,7 +961,7 @@
       const rect = host.getBoundingClientRect(), pointerX = event.clientX - rect.left, pointerY = event.clientY - rect.top, labelCandidate = labelCandidateAt(pointerX, pointerY), camera = state.graph.camera(); let nearest = null, best = Infinity, nearestDistance = Infinity;
       if (labelCandidate) {
         state.hoverCandidate = labelCandidate;
-        label.textContent = labelCandidate.kind === 'system' ? `${labelCandidate.target.name} · ${labelCandidate.target.security.toFixed(2)}` : `${labelCandidate.target.name} · ${labelCandidate.kind}`;
+        if (labelCandidate.kind === 'system') label.innerHTML = combatHoverMarkup(labelCandidate.target); else label.textContent = `${labelCandidate.target.name} · ${labelCandidate.kind}`;
         label.style.display = 'block'; label.style.left = `${labelCandidate.x + 12}px`; label.style.top = `${labelCandidate.y + 12}px`; host.style.cursor = 'pointer'; return;
       }
       for (const node of state.nodesById.values()) {
@@ -973,28 +973,63 @@
       }
       const radius = Math.min(42, Math.max(12, nearestDistance / 75));
       state.hoverCandidate = nearest && best <= radius ** 2 ? { kind: 'system', target: nearest.node } : null;
-      if (state.hoverCandidate) { label.textContent = `${state.hoverCandidate.target.name} · ${state.hoverCandidate.target.security.toFixed(2)}`; label.style.display = 'block'; label.style.left = `${nearest.point.x + 12}px`; label.style.top = `${nearest.point.y + 12}px`; host.style.cursor = 'pointer'; }
+      if (state.hoverCandidate) { label.innerHTML = combatHoverMarkup(state.hoverCandidate.target); label.style.display = 'block'; label.style.left = `${nearest.point.x + 12}px`; label.style.top = `${nearest.point.y + 12}px`; host.style.cursor = 'pointer'; }
       else { label.style.display = 'none'; host.style.cursor = 'grab'; }
     });
     host.addEventListener('pointerup', () => { if (state.pointer?.moved) state.suppressNodeClickUntil = performance.now() + 180; }, true);
     host.addEventListener('click', event => { if (state.pointer?.moved) { event.stopImmediatePropagation(); state.pointer = null; return; } if (!state.hoverCandidate) return; event.stopImmediatePropagation(); selectCandidate(state.hoverCandidate); state.pointer = null; }, true);
     host.addEventListener('contextmenu', event => { if (!state.hoverCandidate || state.hoverCandidate.kind !== 'system' || state.pointer?.moved) return; event.preventDefault(); event.stopImmediatePropagation(); setEndpoint('origin', state.hoverCandidate.target); focus(state.hoverCandidate.target); }, true);
   }
+  function combatMarkerGroups(markers, now = Date.now()) {
+    const groups = new Map();
+    for (const marker of markers) {
+      if (!marker?.system_id || now >= marker.expiresAt) continue;
+      const group = groups.get(marker.system_id) || { system_id: marker.system_id, count: 0, value: 0, latestAt: 0, expiresAt: 0, markers: [] };
+      group.count += 1;
+      group.value += Number(marker.value) || 0;
+      group.latestAt = Math.max(group.latestAt, marker.happenedAt || 0);
+      group.expiresAt = Math.max(group.expiresAt, marker.expiresAt || 0);
+      group.markers.push(marker);
+      groups.set(marker.system_id, group);
+    }
+    return [...groups.values()].map(group => ({ ...group, markers: group.markers.sort((a, b) => b.happenedAt - a.happenedAt) }));
+  }
+  function combatActivity(count) {
+    if (count >= 10) return { symbol: '💀', level: 'critical', color: '#ff4867' };
+    if (count >= 5) return { symbol: '🔥', level: 'hot', color: '#ff7652' };
+    if (count >= 2) return { symbol: '⚠', level: 'warning', color: '#ffb34e' };
+    if (count === 1) return { symbol: '◉', level: 'watch', color: '#f4d07f' };
+    return { symbol: '●', level: 'quiet', color: '#88a7b2' };
+  }
+  const combatGroupFor = (systemId, now = Date.now()) => combatMarkerGroups(state.combatMarkers.values(), now).find(group => Number(group.system_id) === Number(systemId)) || { system_id: systemId, count: 0, value: 0, markers: [] };
+  const combatAge = (happenedAt, now = Date.now()) => `${Math.max(0, Math.floor((now - happenedAt) / 60))}m`;
+  const combatIsk = value => value >= 1e9 ? `${(value / 1e9).toFixed(2)} B` : value >= 1e6 ? `${Math.round(value / 1e6)} M` : `${Math.round(value / 1e3)} k`;
+  function combatHoverMarkup(system, now = Date.now()) {
+    const group = combatGroupFor(system.id, now), activity = combatActivity(group.count);
+    const kills = group.markers.slice(0, 5).map(marker => `<span>${combatAge(marker.happenedAt, now)}&nbsp; ${escapeHtml(marker.victim_ship_name || (marker.victim_ship_type_id ? `Ship #${marker.victim_ship_type_id}` : 'Vaisseau inconnu'))}<small>${Number(marker.attacker_count) || 0} attaquant(s)</small></span>`).join('');
+    return `<b>${escapeHtml(system.name)} <small>${system.security.toFixed(2)}</small></b><hr><strong style="color:${activity.color}">${activity.symbol} ${group.count} kill${group.count === 1 ? '' : 's'} / 30 min</strong>${group.count ? `<em>💰 ${combatIsk(group.value)} ISK détruits</em><div class="eve-map-hover-kills">${kills}</div>` : ''}`;
+  }
   function drawCombatMarkers(context, camera, width, height, now = Date.now()) {
     for (const [key, marker] of state.combatMarkers) {
-      if (!marker?.system_id || now >= marker.expiresAt) { state.combatMarkers.delete(key); continue; }
-      const node = state.nodesById.get(Number(marker.system_id));
+      if (!marker?.system_id || now >= marker.expiresAt) state.combatMarkers.delete(key);
+    }
+    for (const group of combatMarkerGroups(state.combatMarkers.values(), now)) {
+      const node = state.nodesById.get(Number(group.system_id));
       if (!node || !visibleNode(node)) continue;
       const point = projectVisible(node, camera, width, height);
       if (!point) continue;
-      const life = Math.max(0, Math.min(1, (marker.expiresAt - now) / COMBAT_MARKER_TTL_MS));
-      const pulse = .5 + .5 * Math.sin(now / 310 + Number(marker.killmail_id || marker.system_id) % 31);
-      const radius = 8 + (1 - life) * 16;
-      context.beginPath(); context.arc(point.x, point.y, radius * (1 + pulse * .12), 0, Math.PI * 2);
-      context.strokeStyle = '#f0546e'; context.globalAlpha = (.22 + pulse * .25) * life;
-      context.lineWidth = 1.15 + pulse * .65; context.stroke();
-      context.beginPath(); context.arc(point.x, point.y, 2.3 + pulse * 1.7, 0, Math.PI * 2);
-      context.fillStyle = '#ffb090'; context.globalAlpha = (.42 + pulse * .28) * life; context.fill();
+      const life = Math.max(0, Math.min(1, (group.expiresAt - now) / COMBAT_MARKER_TTL_MS));
+      const activity = combatActivity(group.count);
+      const pulse = .5 + .5 * Math.sin(now / 560 + Number(group.system_id) % 31);
+      const underlineWidth = (group.count >= 2 ? 24 : 14) + Math.min(group.count, 4) * 3;
+      const underlineY = point.y + 10;
+      context.beginPath(); context.moveTo(point.x - underlineWidth / 2, underlineY); context.lineTo(point.x + underlineWidth / 2, underlineY);
+      context.strokeStyle = activity.color; context.globalAlpha = (.38 + pulse * .18) * (.45 + life * .55);
+      context.lineWidth = group.count >= 2 ? 2.2 : 1.45; context.stroke();
+      if (group.count >= 2) {
+        context.font = '700 12px system-ui, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'bottom';
+        context.fillStyle = activity.color; context.globalAlpha = .72 + pulse * .24; context.fillText(`${activity.symbol} ${group.count}`, point.x, underlineY - 4);
+      }
     }
     context.globalAlpha = 1;
   }
@@ -1278,7 +1313,7 @@
   window.refreshEveMapCharacterPositions = () => loadCharacterPositions();
   if (window.__eveMapTest) {
     Object.assign(window.__eveMapTest, {
-      clipSegmentToViewport, projectGateSegment, characterColor, characterMarkerScale, systemObjectScale,
+      clipSegmentToViewport, projectGateSegment, characterColor, characterMarkerScale, systemObjectScale, combatMarkerGroups, combatActivity,
       estimateGateTraffic, estimateGateFlows, trafficParticlePlan, trafficPacketOffsets, trafficParticleSpeed, trafficParticleProgress, trafficSegmentProgress, trafficParticleVisualStyle,
       shipIconUrl, formatKillDate, killLocation, attackerPopoverMarkup,
       influenceOverlayRadius, influenceOverlayStyle, influenceLayers, cappedSystemObjectScale, updateSystemScreenScales,
