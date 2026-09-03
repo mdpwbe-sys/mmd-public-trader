@@ -38,6 +38,7 @@ This is the **universal trader** build: any region, any station, any citadel —
 - **📡 Cached Live Tactical Intel**: Optional Traffic and Danger overlays use CCP's public ESI jump and kill data with a resilient local cache; animated gate particles visually model estimated link traffic without blocking navigation when ESI is unavailable.
 - **🏳️ Influence Overlays**: Display player sovereignty only for eligible null-sec systems, or static Empire & NPC influence, as a separate visual layer over the base security map.
 - **💀 Lazy zKillboard Intel**: Opening a system panel can fetch a small, cached set of recent kills on demand, including location, time, value, and an attacker/ship breakdown with links to the external kill reports.
+- **📍 Opt-in Pilot Position Tracking**: Connected pilots that grant the location scope appear on the map and refresh every 15 seconds while the map is open; selecting one focuses their current system.
 
 ---
 
@@ -50,6 +51,7 @@ The **New Eden** tab is an interactive navigation and intel view built from bund
 - **Routes**: the selected route is highlighted system by system with EVE-style square markers. Its summary reports jump count, high-sec safety, traffic, kills, and dangerous systems. A high-sec alternative is offered when the direct route crosses low-sec or null-sec.
 - **Live data**: Traffic and Danger are optional overlays sourced server-side from CCP's public ESI endpoints. Results are cached for several minutes and gracefully fall back to the most recent snapshot, so live data never prevents the base map from working.
 - **Influence**: Player sovereignty and Empire & NPC overlays retain the normal security colors underneath. The sovereignty layer excludes faction/pirate and non-null systems by design.
+- **Pilots**: character markers use the same color LEDs as the dashboard. Grant `esi-location.read_location.v1` during SSO to show a pilot's last ESI location; all markers refresh every 15 seconds only while the map is open.
 - **zKillboard**: Recent kills are loaded only after opening a system panel—never for the whole galaxy—and remain cached. Hover a kill for attacker and ship details, then open the external report when needed.
 
 The visual layer also includes a 360° celestial sky, subtle nebula background, distance-aware system markers, and animated traffic particles. These effects reuse the map's existing canvas render path rather than creating a costly Three.js object per system.
@@ -111,6 +113,7 @@ Persistent data (DB, `.env`, logs) lives in `%APPDATA%/MMD-Trader` — so it sur
    - `esi-characters.read_blueprints.v1`
    - `esi-characters.read_standings.v1`
    - `esi-skills.read_skills.v1`
+   - `esi-location.read_location.v1` *(optional map position tracking)*
 5. Set **Callback URL** to `http://127.0.0.1:8766/callback`.
 6. Copy your `Client ID` and `Secret Key` into the first-launch wizard (or your local `.env`).
 

@@ -1,12 +1,14 @@
 /* Offline New Eden graph.  Positions are fixed from CCP's physical coordinates. */
 (function () {
-  const state = { graph: null, data: null, nodesById: null, gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyTexture: null, skyStars: [], skyFrameKey: null, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, selectedSystemId: null, selectedCharacterId: null, areaFocus: null, killHoverKey: null, killPopover: null, characters: [], live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
+  const state = { graph: null, data: null, nodesById: null, gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyField: null, skyImage: null, skyRays: null, skyTexture: null, skyTextureLoading: false, skyStars: [], skyFrameKey: null, skyLastPaintAt: 0, skyInteracting: false, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, killHoverKey: null, killPopover: null, characters: [], characterTrackingTimer: null, live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
   const byId = () => new Map((state.data && state.data.systems || []).map(s => [s.id, s]));
   const api = () => window.pywebview && window.pywebview.api || window.api;
   const mapWorkspace = () => document.getElementById('eve-map-workspace') || document.getElementById('eve-map-overlay');
   const security = s => s >= .5 ? 'high' : s > 0 ? 'low' : 'null';
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const CHARACTER_COLORS = ['#66e7f5', '#ffca62', '#e978b1', '#aa8cff', '#7ee6a9', '#ff956e'];
+  const CHARACTER_POSITION_POLL_MS = 15_000;
+  const characterPositionTrackingInterval = visible => visible ? CHARACTER_POSITION_POLL_MS : null;
   const characterColorInfo = character => {
     const dashboardColor = window.getCharColorInfo?.(character?.name);
     if (dashboardColor?.color) return dashboardColor;
@@ -22,6 +24,7 @@
     });
     return groups;
   };
+  const visibleCharacterIds = () => [...characterGroups().values()].flat().map(character => character.character_id).sort((left, right) => left - right);
   const liveFor = system => state.live.systems[String(system?.id)] || { ship_jumps: 0, ship_kills: 0, pod_kills: 0, npc_kills: 0, danger: 0, danger_band: 'normal' };
   const sovereigntyFor = system => state.sovereignty.systems[String(system?.id)] || {};
   function influenceLayers(node, filters = state.filters, sovereignty = sovereigntyFor(node)) {
@@ -29,7 +32,7 @@
     const playerSovereignId = sovereignty.alliance_id || sovereignty.corporation_id;
     // Empires & NPC is static SDE data.  It must not disappear merely because
     // a previously loaded public Sov cache happens to know an owner here.
-    if (filters.empires && node.faction_id) layers.push({ id: node.faction_id, alpha: .24, kind: 'empire', offset: layers.length });
+    if (filters.empires && node.faction_id) layers.push({ id: node.faction_id, alpha: .40, kind: 'empire', offset: layers.length });
     // CCP's sovereignty payload also contains faction-owned systems. Player
     // Sov intentionally means only player alliances/corporations in null-sec.
     if (filters.sovereignty && security(node.security) === 'null' && playerSovereignId) layers.push({ id: playerSovereignId, alpha: sovereignty.alliance_id ? .40 : .32, kind: 'sovereignty', offset: layers.length });
@@ -45,12 +48,117 @@
   // same frame, with a deliberate quarter-turn yaw so its Milky-Way band wraps
   // around the map rather than cutting across the default overhead shot.
   const SKY_TEXTURE_YAW = Math.PI / 2;
+  const SKY_POLE_MARGIN = .035;
+  // Preserve the authentic 3D SDE layout while constraining navigation around
+  // a stable X/Z ground frame: no pole crossing means right-drag does not turn
+  // into accidental depth movement.
+  const NEW_EDEN_MIN_POLAR_ANGLE = .12;
+  const NEW_EDEN_MAX_POLAR_ANGLE = .56;
+  const SKY_TEXTURE_URL = 'data/sky/new-eden-sky-equirect-v2.png';
+  const SKY_MOVING_FRAME_MS = 110;
+  const SKY_SETTLED_FRAME_MS = 72;
+  const SKY_TAU = Math.PI * 2;
+  const SKY_GPU_MAX_DPR = 1.35;
+  const SKY_GPU_VERTEX_SHADER = `
+    attribute vec2 aPosition;
+    varying vec2 vUv;
+    void main() {
+      vUv = aPosition * .5 + .5;
+      gl_Position = vec4(aPosition, 0.0, 1.0);
+    }
+  `;
+  const SKY_GPU_FRAGMENT_SHADER = `
+    precision highp float;
+    uniform mat3 uCameraRotation;
+    uniform mat2 uWorldToSky;
+    uniform vec2 uInverseFocal;
+    uniform sampler2D uSkyTexture;
+    varying vec2 vUv;
+    const float PI = 3.141592653589793;
+    // One deterministic candidate per cube-face cell.  This keeps the nearby
+    // stellar shell even over the poles, without a CPU star list or a second
+    // canvas to repaint while the camera moves.
+    vec3 hash33(vec3 value) {
+      value = fract(value * vec3(.1031, .11369, .13787));
+      value += dot(value, value.yxz + 19.19);
+      return fract((value.xxy + value.yzz) * value.zyx);
+    }
+    vec2 cubeFaceUv(vec3 direction, out float face) {
+      vec3 magnitude = abs(direction);
+      vec2 coordinate;
+      if (magnitude.x >= magnitude.y && magnitude.x >= magnitude.z) {
+        float inverseAxis = 1.0 / max(magnitude.x, .0001);
+        if (direction.x >= 0.0) { face = 0.0; coordinate = vec2(-direction.z, direction.y) * inverseAxis; }
+        else { face = 1.0; coordinate = vec2(direction.z, direction.y) * inverseAxis; }
+      } else if (magnitude.y >= magnitude.z) {
+        float inverseAxis = 1.0 / max(magnitude.y, .0001);
+        if (direction.y >= 0.0) { face = 2.0; coordinate = vec2(direction.x, -direction.z) * inverseAxis; }
+        else { face = 3.0; coordinate = vec2(direction.x, direction.z) * inverseAxis; }
+      } else {
+        float inverseAxis = 1.0 / max(magnitude.z, .0001);
+        if (direction.z >= 0.0) { face = 4.0; coordinate = vec2(direction.x, direction.y) * inverseAxis; }
+        else { face = 5.0; coordinate = vec2(-direction.x, direction.y) * inverseAxis; }
+      }
+      return coordinate * .5 + .5;
+    }
+    vec3 nearStarLayer(vec2 faceUv, float face, float cells, float density, float radius, float seed) {
+      vec2 cellCoordinate = faceUv * cells;
+      vec2 cell = floor(cellCoordinate);
+      vec2 localCoordinate = fract(cellCoordinate);
+      vec3 candidate = hash33(vec3(cell, face * 29.17 + seed));
+      float exists = 1.0 - step(density, candidate.z);
+      vec2 starCoordinate = mix(vec2(.30), vec2(.70), candidate.xy);
+      float distanceToStar = length(localCoordinate - starCoordinate);
+      float core = 1.0 - smoothstep(radius * .38, radius, distanceToStar);
+      float wing = 1.0 - smoothstep(radius, radius * 1.7, distanceToStar);
+      float luminosity = .22 + .38 * inversesqrt(sqrt(max(candidate.x, .025)));
+      float warm = smoothstep(.62, .97, candidate.y);
+      vec3 tint = mix(vec3(.52, .70, 1.0), vec3(1.0, .69, .44), warm);
+      return tint * exists * (core + wing * .055) * luminosity;
+    }
+    void main() {
+      vec2 ndc = vUv * 2.0 - 1.0;
+      vec3 viewDirection = normalize(vec3(ndc.x * uInverseFocal.x, ndc.y * uInverseFocal.y, -1.0));
+      vec3 worldDirection = uCameraRotation * viewDirection;
+      vec2 skyXZ = uWorldToSky * worldDirection.xz;
+      vec3 skyDirection = vec3(skyXZ.x, worldDirection.y, skyXZ.y);
+      float longitude = .5 + atan(skyDirection.z, skyDirection.x) / (2.0 * PI);
+      float latitude = .5 - asin(clamp(skyDirection.y, -1.0, 1.0)) / PI;
+      vec3 distantSky = texture2D(uSkyTexture, vec2(fract(longitude), clamp(latitude, 0.0, 1.0))).rgb;
+      // Two sparse layers create nearby, crisp depth cues while the panorama
+      // continues to own the distant Milky-Way and nebula detail.
+      float nearFace;
+      vec2 nearFaceUv = cubeFaceUv(skyDirection, nearFace);
+      vec3 nearbyStars = nearStarLayer(nearFaceUv, nearFace, 164.0, .030, .125, 3.0);
+      nearbyStars += nearStarLayer(nearFaceUv, nearFace, 72.0, .018, .15, 31.0);
+      gl_FragColor = vec4(distantSky + nearbyStars * .72, 1.0);
+    }
+  `;
   const rotateSkyYaw = (direction, angle) => {
     const cosine = Math.cos(angle), sine = Math.sin(angle);
     return { x: direction.x * cosine + direction.z * sine, y: direction.y, z: -direction.x * sine + direction.z * cosine };
   };
   const skyTextureDirection = direction => rotateSkyYaw(direction, -SKY_TEXTURE_YAW);
   const worldSkyDirection = direction => rotateSkyYaw(direction, SKY_TEXTURE_YAW);
+  function stabilizeOrbitControls(controls) {
+    if (!controls) return;
+    controls.minPolarAngle = NEW_EDEN_MIN_POLAR_ANGLE;
+    controls.maxPolarAngle = NEW_EDEN_MAX_POLAR_ANGLE;
+    controls.screenSpacePanning = false;
+    controls.enablePan = true;
+    controls.object?.up?.set?.(0, 1, 0);
+  }
+  function bindSkyQualityControls(controls) {
+    if (!controls?.addEventListener) return;
+    controls.addEventListener('start', () => { state.skyInteracting = true; });
+    controls.addEventListener('end', () => {
+      state.skyInteracting = false;
+      // The next pass redraws the same view at the settled quality rather than
+      // leaving the lower-cost interaction frame on screen.
+      state.skyFrameKey = null;
+      state.skyLastPaintAt = 0;
+    });
+  }
   const ageText = seconds => seconds == null ? 'indisponible' : seconds < 60 ? 'à l’instant' : `${Math.max(1, Math.round(seconds / 60))} min`;
   const trafficSize = jumps => Math.min(2.15, 1 + Math.log1p(Math.max(0, jumps)) / Math.log(50000) * 1.15);
   const nodeSize = node => (node.security >= .5 ? 1.1 : 1) * (state.filters.traffic ? trafficSize(liveFor(node).ship_jumps) : 1);
@@ -84,21 +192,37 @@
     // active tier evolves from green to red.
     const tierColor = (minimum, maximum) => {
       const t = Math.max(0, Math.min(1, (value - minimum) / (maximum - minimum)));
-      return `hsl(${Math.round(142 - 130 * t)} 62% 64%)`;
+      return `hsl(${Math.round(142 - 130 * t)} 84% 66%)`;
     };
-    const particles = [{ tier: 1, color: tierColor(1, 100), opacity: .56 }];
-    if (value > 100) particles.push({ tier: 2, color: tierColor(101, 1000), opacity: .66 });
-    if (value > 1000) particles.push({ tier: 3, color: tierColor(1001, 9999), opacity: .76 });
+    const particles = [{ tier: 1, color: tierColor(1, 100), opacity: .70 }];
+    if (value > 100) particles.push({ tier: 2, color: tierColor(101, 1000), opacity: .80 });
+    if (value > 1000) particles.push({ tier: 3, color: tierColor(1001, 9999), opacity: .88 });
     return { count: particles.length, particles, jumps: value };
   }
   const trafficPacketOffsets = count => Array.from({ length: count }, (_, index) => index * .052);
-  const trafficParticleSpeed = jumps => 18 + 56 * Math.pow(Math.max(0, Math.min(1, Math.log10(Math.max(1, jumps)) / 4)), .78);
-  const trafficParticleProgress = (now, phase, jumps, screenLength) => {
-    // Pixel speed keeps the path believable at any camera scale; the bounded
-    // transit time avoids both instant short links and inert long links.
-    const transitSeconds = Math.max(.55, Math.min(6, Math.max(1, screenLength) / trafficParticleSpeed(jumps)));
+  const trafficParticleSpeed = jumps => 5 + 18 * Math.pow(Math.max(0, Math.min(1, Math.log10(Math.max(1, jumps)) / 4)), .78);
+  const trafficTransitSeconds = (jumps, worldLength) => Math.max(.7, Math.min(6, Math.max(1, worldLength) / trafficParticleSpeed(jumps)));
+  const trafficParticleProgress = (now, phase, jumps, worldLength) => {
+    // The travel period is derived from stable map-space coordinates, never
+    // from the projected canvas length: moving the camera must not alter time.
+    const transitSeconds = trafficTransitSeconds(jumps, worldLength);
     return (now / 1000 / transitSeconds + phase) % 1;
   };
+  const trafficSegmentWorldLength = segment => {
+    const source = segment?.source, target = segment?.target;
+    if (!source || !target) return 1;
+    return Math.hypot(Number(target.x) - Number(source.x), Number(target.y) - Number(source.y), Number(target.z) - Number(source.z));
+  };
+  const trafficSegmentProgress = (now, phase, jumps, segment) => {
+    const explicitLength = Number(segment?.worldLength);
+    return trafficParticleProgress(now, phase, jumps, explicitLength > 0 ? explicitLength : trafficSegmentWorldLength(segment));
+  };
+  const trafficParticleVisualStyle = particle => ({
+    glowRadius: 3.6,
+    glowAlpha: .22 * Number(particle?.opacity || 0),
+    coreRadius: 1.36,
+    coreAlpha: Math.min(1, .42 + Number(particle?.opacity || 0) * .72),
+  });
   // Systems may gain a little screen presence at galaxy scale, but never enough
   // to compete with the explicitly selected character marker.
   const systemObjectScale = distance => Math.max(.7, Math.min(1.05, .7 + Math.log1p(Math.max(distance, 1) / 180) / 18));
@@ -111,16 +235,17 @@
     // coexist without becoming one flat cotton-ball layer.
     return .11 + 4 * Math.exp(-Math.max(0, distance) / 520);
   };
+  const influenceOverlayOpacity = distance => .50 + .40 * Math.exp(-Math.max(0, distance) / 1500);
   const influenceOverlayStyle = (distance, kind) => {
     const far = Math.max(0, Math.min(1, (distance - 300) / 2200));
     if (kind === 'empire') {
-      // Static NPC/faction space must remain legible when the observer is
-      // close to the systems; it then expands gently into territorial masses.
-      return { radius: 5.3 + far * 3.2, opacity: .32 + .42 * Math.exp(-Math.max(0, distance) / 2100) };
+      // Static NPC/faction space is a real filter, not a secondary hint: its
+      // disc clears the largest rendered system node even at close range.
+      return { radius: MAX_SYSTEM_RADIUS_PX + 1.5 + far * 3.0, opacity: influenceOverlayOpacity(distance) };
     }
-    // Player Sov has priority over the static overlay: it is larger and more
-    // opaque at every distance while still blending cleanly in dense null-sec.
-    return { radius: 6.4 + far * 4, opacity: .46 + .44 * Math.exp(-Math.max(0, distance) / 1300) };
+    // Player Sov retains a slightly larger territorial mass, but both filters
+    // share their opacity so one does not disappear when switching overlays.
+    return { radius: MAX_SYSTEM_RADIUS_PX + 2.7 + far * 3.8, opacity: influenceOverlayOpacity(distance) };
   };
   const influenceOverlayRadius = (distance, kind) => influenceOverlayStyle(distance, kind).radius;
   function cappedSystemObjectScale(object, distance, camera, viewportHeight) {
@@ -232,24 +357,49 @@
     return [...groups.values()].map(group => ({ ...group, x: group.x / group.count, y: group.y / group.count, z: group.z / group.count, span: Math.max(...axes.map(axis => group.max[axis] - group.min[axis])) }));
   }
   const visibleLabelGroup = (group, filters = state.filters) => Object.entries(group.securityCounts || {}).some(([kind, count]) => count > 0 && filters[kind]);
-  function drawMapLabels(context, camera, width, height, nearestDistance) {
-    const mode = nearestDistance > 900 ? 'region' : nearestDistance > 240 ? 'constellation' : 'system';
+  const labelsCanOverlap = mode => mode === 'region';
+  const labelFade = (distance, start, end) => Math.max(0, Math.min(1, (distance - start) / (end - start)));
+  function mapLabelLayers(nearestDistance) {
+    const regionOpacity = labelFade(nearestDistance, 700, 1100);
+    const systemOpacity = 1 - labelFade(nearestDistance, 180, 300);
+    const constellationOpacity = Math.min(1 - regionOpacity, 1 - systemOpacity);
+    return [
+      { mode: 'region', opacity: regionOpacity },
+      { mode: 'constellation', opacity: constellationOpacity },
+      { mode: 'system', opacity: systemOpacity },
+    ].filter(layer => layer.opacity > .01);
+  }
+  function mapLabelPlacement(mode, point, textWidth, width, height) {
+    let x = mode === 'system' ? point.x - 7 : point.x;
+    let y = mode === 'system' ? point.y - 7 : point.y;
+    if (mode === 'region') {
+      const padding = 6, halfWidth = textWidth / 2;
+      x = Math.max(halfWidth + padding, Math.min(width - halfWidth - padding, x));
+      y = Math.max(12, Math.min(height - 12, y));
+    }
+    return { x, y };
+  }
+  function drawMapLabelLayer(context, camera, width, height, mode, opacity) {
     const labels = (mode === 'region' ? state.labelGroups?.regions : mode === 'constellation' ? state.labelGroups?.constellations : [...state.nodesById.values()].filter(visibleNode))?.filter(label => (mode === 'system' ? isAreaMember(label) : visibleLabelGroup(label)) && !(state.areaFocus?.kind === mode && label.id !== state.areaFocus.area.id));
     if (!labels) return;
     const minSpacing = mode === 'region' ? 92 : mode === 'constellation' ? 64 : 48, drawn = [];
     context.save(); context.textAlign = mode === 'system' ? 'right' : 'center'; context.textBaseline = mode === 'system' ? 'bottom' : 'middle';
     context.font = mode === 'region' ? '600 11px system-ui, sans-serif' : mode === 'constellation' ? '10px system-ui, sans-serif' : '10px system-ui, sans-serif';
     context.fillStyle = mode === 'region' ? 'rgba(177, 235, 245, .72)' : mode === 'constellation' ? 'rgba(166, 207, 220, .52)' : 'rgba(222, 244, 249, .76)';
-    state.labelHitTargets = [];
+    context.globalAlpha = opacity;
     labels.slice().sort((a, b) => b.count - a.count).forEach(label => {
-      const point = projectVisible(label, camera, width, height); if (!point || point.x < 0 || point.x > width || point.y < 0 || point.y > height || drawn.some(other => Math.hypot(other.x - point.x, other.y - point.y) < minSpacing)) return;
+      const point = projectVisible(label, camera, width, height); if (!point || point.x < 0 || point.x > width || point.y < 0 || point.y > height || (!labelsCanOverlap(mode) && drawn.some(other => Math.hypot(other.x - point.x, other.y - point.y) < minSpacing))) return;
       const text = mode === 'system' ? label.name : label.name.toUpperCase();
-      const labelX = mode === 'system' ? point.x - 7 : point.x, labelY = mode === 'system' ? point.y - 7 : point.y;
-      context.fillText(text, labelX, labelY); drawn.push(point);
       const measure = context.measureText(text).width;
+      const { x: labelX, y: labelY } = mapLabelPlacement(mode, point, measure, width, height);
+      context.fillText(text, labelX, labelY); drawn.push(point);
       state.labelHitTargets.push({ kind: mode, target: label, x: mode === 'system' ? labelX - measure / 2 : labelX, y: labelY, width: measure, height: 14 });
     });
     context.restore();
+  }
+  function drawMapLabels(context, camera, width, height, nearestDistance) {
+    state.labelHitTargets = [];
+    mapLabelLayers(nearestDistance).forEach(layer => drawMapLabelLayer(context, camera, width, height, layer.mode, layer.opacity));
   }
   const gateKey = (source, target) => [source, target].sort((a, b) => a - b).join(':');
   const influenceFor = system => {
@@ -278,7 +428,7 @@
       if (name && target) target.textContent = `${influence.kind} · ${name}`;
     } catch (_) { /* The ID remains a safe fallback when public ESI is unavailable. */ }
   }
-  function showSystem(system) {
+  function showSystem(system, { loadDetails = true } = {}) {
     const panel = document.getElementById('eve-map-panel');
     const live = liveFor(system), stale = state.live.state === 'stale';
     const pilots = state.characters.filter(character => character.system_id === system.id).map(character => `<span class="eve-pilot"><i style="background:${characterColor(character)}"></i>${escapeHtml(character.name)}</span>`);
@@ -286,7 +436,7 @@
     state.selectedSystemId = system.id;
     panel.querySelector('.eve-map-empty')?.remove(); panel.querySelector('.eve-map-system')?.remove();
     panel.insertAdjacentHTML('afterbegin', `<div class="eve-map-system"><h3>${escapeHtml(system.name)} <small>${system.security.toFixed(1)}</small></h3><dl><dt>Région</dt><dd>${escapeHtml(system.region)}</dd><dt>Constellation</dt><dd>${escapeHtml(system.constellation)}</dd>${influence ? `<dt>Influence</dt><dd class="eve-map-influence" data-eve-influence-id="${influence.id}">${escapeHtml(influence.kind)} · ${influence.id}</dd>` : ''}<dt>ID</dt><dd>${system.id}</dd>${pilots.length ? `<dt>Pilotes actifs</dt><dd>${pilots.join('<br>')}</dd>` : ''}</dl><section class="eve-live-intel"><h4>LIVE INTEL</h4><dl><dt>Traffic</dt><dd>${Number(live.ship_jumps).toLocaleString('fr-BE')} jumps</dd><dt>Kills</dt><dd>Ships ${live.ship_kills} · Pods ${live.pod_kills} · NPC ${live.npc_kills}</dd><dt>Danger</dt><dd><span class="eve-danger-meter eve-danger-meter--${live.danger_band}"><i style="width:${live.danger}%"></i></span> ${live.danger}/100</dd></dl><small class="eve-live-updated">${stale ? 'Live Intel stale · ' : ''}Updated ${ageText(state.live.age_seconds)}</small><div class="eve-map-latest" data-system-id="${system.id}"><small>Derniers kills zKill : chargement…</small></div></section><div class="eve-map-actions"><button class="btn mini" onclick="setEveMapOrigin(${system.id})">Définir origine</button><button class="btn mini" onclick="setEveMapDestination(${system.id})">Définir destination</button></div></div>`);
-    loadInfluenceName(influence, system.id); loadRecentKills(system.id);
+    if (loadDetails) { loadInfluenceName(influence, system.id); loadRecentKills(system.id); }
   }
   const visibleNode = node => state.filters[security(node.security)];
   const isAreaMember = (node, focus = state.areaFocus) => !focus || (focus.kind === 'region' ? node.region_id === focus.area.id : node.constellation_id === focus.area.id);
@@ -300,7 +450,7 @@
       state.live = { systems: response.systems || {}, state: response.state || (response.ok ? 'live' : 'unavailable'), updated_at: response.updated_at || null, age_seconds: response.age_seconds };
     } catch (_) { state.live = { systems: {}, state: 'unavailable', updated_at: null }; }
     render();
-    if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId));
+    if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId), { loadDetails: false });
   }
   async function loadSovereignty() {
     const indicator = document.getElementById('eve-map-sovereignty-state');
@@ -317,13 +467,53 @@
     render();
     if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId));
   }
+  const characterPositionKey = positions => positions.map(character => `${character.character_id}:${character.system_id}`).sort().join('|');
+  const characterPositionSystemId = characterId => state.characters.find(character => String(character.character_id) === String(characterId))?.system_id ?? null;
   async function loadCharacterPositions() {
-    if (!api()?.get_eve_map_character_positions) return;
+    if (!api()?.get_eve_map_character_positions) return false;
+    const previousKey = characterPositionKey(state.characters), selectedCharacterId = state.selectedCharacterId, previousSelectedSystemId = characterPositionSystemId(selectedCharacterId);
     try { const response = await api().get_eve_map_character_positions(); state.characters = response.positions || []; }
     catch (_) { state.characters = []; }
     const select = document.getElementById('eve-map-character');
     if (select) { select.innerHTML = '<option value="">Tous les pilotes</option>'; state.characters.forEach(character => { const option = document.createElement('option'); option.value = character.character_id; option.textContent = `${character.name} · ${systemFor(character.system_id)?.name || 'hors carte'}`; select.appendChild(option); }); }
     if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId));
+    const selectedSystemId = characterPositionSystemId(selectedCharacterId);
+    if (selectedCharacterId && previousSelectedSystemId != null && selectedSystemId != null && previousSelectedSystemId !== selectedSystemId) focus(systemFor(selectedSystemId));
+    return previousKey !== characterPositionKey(state.characters);
+  }
+  function stopCharacterPositionTracking() {
+    if (state.characterTrackingTimer != null) clearTimeout(state.characterTrackingTimer);
+    state.characterTrackingTimer = null;
+  }
+  function scheduleCharacterPositionTracking() {
+    const interval = characterPositionTrackingInterval(state.visible);
+    if (interval == null || state.characterTrackingTimer != null) return;
+    state.characterTrackingTimer = setTimeout(async () => {
+      state.characterTrackingTimer = null;
+      await loadCharacterPositions();
+      scheduleCharacterPositionTracking();
+    }, interval);
+  }
+  function startCharacterPositionTracking() {
+    stopCharacterPositionTracking();
+    scheduleCharacterPositionTracking();
+  }
+  async function focusCharacterPosition(characterId) {
+    if (!state.visible || !state.graph || characterId == null) return false;
+    await loadCharacterPositions();
+    const character = state.characters.find(row => String(row.character_id) === String(characterId));
+    if (!character) return false;
+    state.selectedCharacterId = String(character.character_id);
+    const select = document.getElementById('eve-map-character');
+    if (select) select.value = state.selectedCharacterId;
+    startCharacterPositionTracking();
+    focus(systemFor(character.system_id));
+    return true;
+  }
+  function clearCharacterSelection() {
+    state.selectedCharacterId = null;
+    const select = document.getElementById('eve-map-character');
+    if (select) select.value = '';
   }
   async function loadRecentKills(systemId) {
     if (!api()?.get_eve_map_recent_kills) return;
@@ -395,48 +585,180 @@
     if (state.skyCanvas) return;
     const canvas = document.createElement('canvas'); canvas.className = 'eve-map-sky'; canvas.setAttribute('aria-hidden', 'true');
     Object.assign(canvas.style, { position: 'absolute', inset: '0', zIndex: '0', pointerEvents: 'none' });
-    host.appendChild(canvas); state.skyCanvas = canvas; state.skyStars = buildSkyStars(); state.skyFrameKey = null; loadSkyTexture();
+    host.appendChild(canvas); state.skyCanvas = canvas; state.skyRenderer = createSkyRenderer(canvas); state.skyStars = state.skyRenderer ? [] : buildSkyStars(); state.skyFrameKey = null; state.skyLastPaintAt = 0; state.skyInteracting = false;
+    if (state.skyRenderer && state.skyTextureImage) uploadSkyTexture(state.skyRenderer, state.skyTextureImage);
+    loadSkyTexture(); startSkyFrame();
+  }
+  function compileSkyShader(gl, type, source) {
+    const shader = gl.createShader(type); gl.shaderSource(shader, source); gl.compileShader(shader);
+    if (gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return shader;
+    gl.deleteShader(shader); return null;
+  }
+  function createSkyRenderer(canvas) {
+    if (!canvas?.getContext) return null;
+    let gl;
+    try {
+      const options = { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false, powerPreference: 'high-performance' };
+      gl = canvas.getContext('webgl', options) || canvas.getContext('experimental-webgl', options);
+    } catch (_) { return null; }
+    if (!gl) return null;
+    const vertex = compileSkyShader(gl, gl.VERTEX_SHADER, SKY_GPU_VERTEX_SHADER), fragment = compileSkyShader(gl, gl.FRAGMENT_SHADER, SKY_GPU_FRAGMENT_SHADER);
+    if (!vertex || !fragment) return null;
+    const program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { gl.deleteProgram(program); return null; }
+    const position = gl.getAttribLocation(program, 'aPosition');
+    const locations = { cameraRotation: gl.getUniformLocation(program, 'uCameraRotation'), worldToSky: gl.getUniformLocation(program, 'uWorldToSky'), inverseFocal: gl.getUniformLocation(program, 'uInverseFocal'), texture: gl.getUniformLocation(program, 'uSkyTexture') };
+    if (position < 0 || Object.values(locations).some(location => location == null)) { gl.deleteProgram(program); return null; }
+    const buffer = gl.createBuffer(), texture = gl.createTexture();
+    if (!buffer || !texture) { gl.deleteProgram(program); return null; }
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([3, 10, 18, 255]));
+    gl.useProgram(program); gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0); gl.uniform1i(locations.texture, 0); gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE); gl.disable(gl.BLEND);
+    const yaw = -SKY_TEXTURE_YAW;
+    return { canvas, gl, program, buffer, position, locations, texture, cameraRotation: new Float32Array(9), worldToSky: new Float32Array([Math.cos(yaw), -Math.sin(yaw), Math.sin(yaw), Math.cos(yaw)]) };
+  }
+  function uploadSkyTexture(renderer, image) {
+    if (!renderer || !image) return false;
+    try {
+      const { gl, texture } = renderer;
+      gl.bindTexture(gl.TEXTURE_2D, texture); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      return true;
+    } catch (_) { return false; }
+  }
+  function cacheSkyTexturePixels(image) {
+    const source = document.createElement('canvas'); source.width = image.naturalWidth; source.height = image.naturalHeight;
+    const sourceContext = source.getContext('2d', { willReadFrequently: true });
+    if (!sourceContext) throw new Error('Sky texture canvas is unavailable');
+    sourceContext.drawImage(image, 0, 0);
+    state.skyTexture = { width: source.width, height: source.height, pixels: sourceContext.getImageData(0, 0, source.width, source.height).data };
   }
   function loadSkyTexture() {
-    if (state.skyTexture || typeof Image === 'undefined') return;
-    const texture = new Image();
-    texture.onload = () => { state.skyTexture = texture; state.skyFrameKey = null; state.lastLinkDraw = 0; };
-    texture.onerror = () => { state.skyTexture = null; };
-    texture.src = 'data/sky/new-eden-nebula-panorama.png';
+    if (state.skyTextureImage || state.skyTextureLoading || typeof Image !== 'function') return;
+    state.skyTextureLoading = true;
+    const image = new Image();
+    image.decoding = 'async';
+    image.onload = () => {
+      try {
+        if (!image.naturalWidth || !image.naturalHeight) throw new Error('Sky texture has no dimensions');
+        state.skyTextureImage = image;
+        if (!uploadSkyTexture(state.skyRenderer, image)) cacheSkyTexturePixels(image);
+      } catch (_) { state.skyTexture = null; }
+      state.skyTextureLoading = false; state.skyFrameKey = null; state.skyLastPaintAt = 0;
+    };
+    image.onerror = () => { state.skyTextureLoading = false; };
+    image.src = SKY_TEXTURE_URL;
   }
-  function skyView(camera, width, height) {
-    const matrix = camera.matrixWorld?.elements;
-    if (!matrix) return null;
-    const forward = skyTextureDirection({ x: -matrix[8], y: -matrix[9], z: -matrix[10] });
-    const length = Math.hypot(forward.x, forward.y, forward.z) || 1;
-    const longitude = Math.atan2(forward.z / length, forward.x / length);
-    const latitude = Math.asin(Math.max(-1, Math.min(1, forward.y / length)));
-    const verticalFov = 2 * Math.atan(1 / Math.max(.001, camera.projectionMatrix.elements[5]));
-    const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * width / Math.max(1, height));
-    return { longitude, latitude, verticalFov, horizontalFov };
+  function stopSkyFrame() { if (state.skyFrame) cancelAnimationFrame(state.skyFrame); state.skyFrame = null; }
+  function startSkyFrame() {
+    if (!state.skyRenderer || state.skyFrame) return;
+    const frame = () => {
+      state.skyFrame = null;
+      if (!state.visible || !state.skyRenderer || !state.graph || !state.skyCanvas) return;
+      const host = document.getElementById('eve-map-canvas'), width = host?.clientWidth || 0, height = host?.clientHeight || 0;
+      if (width && height) drawSkyMap(width, height, Math.min(window.devicePixelRatio || 1, SKY_GPU_MAX_DPR), state.graph.camera());
+      state.skyFrame = requestAnimationFrame(frame);
+    };
+    state.skyFrame = requestAnimationFrame(frame);
   }
-  function drawWrappedTexture(context, texture, sourceX, sourceY, sourceWidth, sourceHeight, width, height) {
-    const textureWidth = texture.naturalWidth, textureHeight = texture.naturalHeight;
-    let remaining = sourceWidth, currentX = ((sourceX % textureWidth) + textureWidth) % textureWidth, destinationX = 0;
-    while (remaining > .01) {
-      const part = Math.min(remaining, textureWidth - currentX);
-      const destinationWidth = width * part / sourceWidth;
-      context.drawImage(texture, currentX, sourceY, part, sourceHeight, destinationX, 0, destinationWidth, height);
-      remaining -= part; destinationX += destinationWidth; currentX = 0;
+  function skyRayDirection(camera, ndcX, ndcY) {
+    const world = camera.matrixWorld?.elements, projection = camera.projectionMatrix?.elements;
+    if (!world || !projection) return null;
+    const viewX = ndcX / Math.max(.001, projection[0]), viewY = ndcY / Math.max(.001, projection[5]), viewZ = -1;
+    const length = Math.hypot(viewX, viewY, viewZ) || 1;
+    const x = (world[0] * viewX + world[4] * viewY + world[8] * viewZ) / length;
+    const y = (world[1] * viewX + world[5] * viewY + world[9] * viewZ) / length;
+    const z = (world[2] * viewX + world[6] * viewY + world[10] * viewZ) / length;
+    return skyTextureDirection({ x, y, z });
+  }
+  function skyFieldDimensions(width, height, dpr, moving = state.skyInteracting) {
+    const aspect = Math.max(.25, width / Math.max(1, height));
+    const floor = moving ? 82000 : 180000, cap = moving ? 145000 : 360000, coverage = moving ? .18 : .34;
+    const targetPixels = Math.max(floor, Math.min(cap, Math.round(width * height * Math.min(1.25, Math.max(.75, dpr || 1)) * coverage)));
+    const fieldWidth = Math.max(moving ? 300 : 460, Math.round(Math.sqrt(targetPixels * aspect)));
+    return { width: fieldWidth, height: Math.max(moving ? 170 : 260, Math.round(fieldWidth / aspect)) };
+  }
+  function buildSkyRayGrid(width, height, projection) {
+    const focalX = Math.max(.001, Math.abs(projection?.[0] || 1)), focalY = Math.max(.001, Math.abs(projection?.[5] || 1));
+    const key = `${width}:${height}:${Math.round(focalX * 10000)}:${Math.round(focalY * 10000)}`;
+    if (state.skyRays?.key === key) return state.skyRays;
+    const count = width * height, x = new Float32Array(count), y = new Float32Array(count), z = new Float32Array(count);
+    for (let row = 0, index = 0; row < height; row += 1) {
+      const viewY = (1 - (row + .5) / height * 2) / focalY;
+      for (let column = 0; column < width; column += 1, index += 1) {
+        const viewX = ((column + .5) / width * 2 - 1) / focalX, inverseLength = 1 / Math.sqrt(viewX * viewX + viewY * viewY + 1);
+        x[index] = viewX * inverseLength; y[index] = viewY * inverseLength; z[index] = -inverseLength;
+      }
     }
+    state.skyRays = { key, x, y, z };
+    return state.skyRays;
   }
-  function drawNebulaTexture(context, texture, camera, width, height) {
-    const view = skyView(camera, width, height);
-    if (!view || !texture.naturalWidth || !texture.naturalHeight) return;
-    const textureWidth = texture.naturalWidth, textureHeight = texture.naturalHeight;
-    const sourceWidth = Math.min(textureWidth * .82, textureWidth * view.horizontalFov / (Math.PI * 2) * 1.18);
-    const sourceHeight = Math.min(textureHeight, textureHeight * view.verticalFov / Math.PI * 1.22);
-    const centreX = (view.longitude / (Math.PI * 2) + .5) * textureWidth;
-    const centreY = (.5 - view.latitude / Math.PI) * textureHeight;
-    const sourceY = Math.max(0, Math.min(textureHeight - sourceHeight, centreY - sourceHeight / 2));
-    context.save(); context.globalAlpha = .58;
-    drawWrappedTexture(context, texture, centreX - sourceWidth / 2, sourceY, sourceWidth, sourceHeight, width, height);
-    context.restore();
+  function proceduralNebulaPacked(x, y, z) {
+    // This is deliberately low-frequency: the panoramic texture carries the
+    // fine detail, while this field only fills gaps and preserves a coherent
+    // New Eden-aligned band when the texture cannot be decoded.
+    const bend = .11 * Math.sin(x * 4.9 + z * 2.1);
+    const plane = Math.abs(y - bend);
+    const band = 1 / (1 + plane * plane * 95);
+    const broad = .5 + .5 * Math.sin(x * 9.7 + y * 5.6 - z * 7.9);
+    const density = band * (.14 + .86 * broad * broad);
+    const warm = Math.max(0, Math.sin(x * 3.7 - z * 5.8 + .5)) * density;
+    const r = Math.min(255, Math.round(3 + density * 24 + warm * 28)), g = Math.min(255, Math.round(10 + density * 52 + warm * 20)), b = Math.min(255, Math.round(18 + density * 70 + warm * 7));
+    return (r << 16) | (g << 8) | b;
+  }
+  function nebulaColor(x, y, z) {
+    const packed = proceduralNebulaPacked(x, y, z);
+    return { r: packed >> 16 & 255, g: packed >> 8 & 255, b: packed & 255 };
+  }
+  function skyTextureCoordinates(x, y, z) {
+    return {
+      u: .5 + Math.atan2(z, x) / SKY_TAU,
+      v: .5 - Math.asin(Math.max(-1, Math.min(1, y))) / Math.PI,
+    };
+  }
+  function skyTexturePacked(texture, x, y, z) {
+    if (!texture) return 0;
+    // Keep the hot loop allocation-free; skyTextureCoordinates() is retained
+    // separately for diagnostics and tests of the spherical mapping.
+    const longitude = .5 + Math.atan2(z, x) / SKY_TAU;
+    const latitude = .5 - Math.asin(Math.max(-1, Math.min(1, y))) / Math.PI;
+    const column = Math.min(texture.width - 1, Math.max(0, Math.floor((longitude - Math.floor(longitude)) * texture.width)));
+    const row = Math.min(texture.height - 1, Math.max(0, Math.floor(latitude * texture.height)));
+    const index = (row * texture.width + column) * 4, pixels = texture.pixels;
+    return (pixels[index] << 16) | (pixels[index + 1] << 8) | pixels[index + 2];
+  }
+  function writeSkyPixel(pixels, index, texture, x, y, z) {
+    const procedural = proceduralNebulaPacked(x, y, z), textured = skyTexturePacked(texture, x, y, z);
+    const proceduralR = procedural >> 16 & 255, proceduralG = procedural >> 8 & 255, proceduralB = procedural & 255;
+    if (texture) {
+      const textureR = textured >> 16 & 255, textureG = textured >> 8 & 255, textureB = textured & 255;
+      pixels[index] = Math.min(255, Math.round(proceduralR * .38 + textureR * .82));
+      pixels[index + 1] = Math.min(255, Math.round(proceduralG * .38 + textureG * .82));
+      pixels[index + 2] = Math.min(255, Math.round(proceduralB * .38 + textureB * .82));
+    } else {
+      pixels[index] = proceduralR; pixels[index + 1] = proceduralG; pixels[index + 2] = proceduralB;
+    }
+    pixels[index + 3] = 255;
+  }
+  function drawProceduralNebula(context, camera, width, height, dpr) {
+    const dimensions = skyFieldDimensions(width, height, dpr), world = camera.matrixWorld?.elements, projection = camera.projectionMatrix?.elements;
+    if (!world || !projection) return;
+    if (!state.skyField) state.skyField = document.createElement('canvas');
+    const field = state.skyField;
+    if (field.width !== dimensions.width || field.height !== dimensions.height) { field.width = dimensions.width; field.height = dimensions.height; state.skyImage = null; }
+    const fieldContext = field.getContext('2d');
+    if (!fieldContext) return;
+    if (!state.skyImage) state.skyImage = fieldContext.createImageData(field.width, field.height);
+    const pixels = state.skyImage.data, rays = buildSkyRayGrid(field.width, field.height, projection), texture = state.skyTexture;
+    const cosine = Math.cos(-SKY_TEXTURE_YAW), sine = Math.sin(-SKY_TEXTURE_YAW);
+    for (let point = 0, index = 0; point < rays.x.length; point += 1, index += 4) {
+      const viewX = rays.x[point], viewY = rays.y[point], viewZ = rays.z[point];
+      const worldX = world[0] * viewX + world[4] * viewY + world[8] * viewZ;
+      const worldY = world[1] * viewX + world[5] * viewY + world[9] * viewZ;
+      const worldZ = world[2] * viewX + world[6] * viewY + world[10] * viewZ;
+      writeSkyPixel(pixels, index, texture, worldX * cosine + worldZ * sine, worldY, -worldX * sine + worldZ * cosine);
+    }
+    fieldContext.putImageData(state.skyImage, 0, 0);
+    context.save(); context.imageSmoothingEnabled = true; context.imageSmoothingQuality = 'high'; context.drawImage(field, 0, 0, field.width, field.height, 0, 0, width, height); context.restore();
   }
   function skyCameraKey(camera, width, height, dpr) {
     const world = camera.matrixWorld?.elements, projection = camera.projectionMatrix?.elements;
@@ -452,13 +774,29 @@
     const x = -world[8], y = -world[9], z = -world[10], length = Math.hypot(x, y, z) || 1;
     return { x: x / length, y: y / length, z: z / length };
   }
+  function drawSkyGpu(renderer, camera, width, height, dpr, frameKey) {
+    const world = camera.matrixWorld?.elements, projection = camera.projectionMatrix?.elements;
+    if (!world || !projection) return;
+    const { canvas, gl, program, position, locations, texture, cameraRotation, worldToSky } = renderer;
+    const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) { canvas.width = pixelWidth; canvas.height = pixelHeight; canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; }
+    cameraRotation[0] = world[0]; cameraRotation[1] = world[1]; cameraRotation[2] = world[2]; cameraRotation[3] = world[4]; cameraRotation[4] = world[5]; cameraRotation[5] = world[6]; cameraRotation[6] = world[8]; cameraRotation[7] = world[9]; cameraRotation[8] = world[10];
+    gl.viewport(0, 0, pixelWidth, pixelHeight); gl.useProgram(program); gl.bindBuffer(gl.ARRAY_BUFFER, renderer.buffer); gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniformMatrix3fv(locations.cameraRotation, false, cameraRotation); gl.uniformMatrix2fv(locations.worldToSky, false, worldToSky); gl.uniform2f(locations.inverseFocal, 1 / Math.max(.001, projection[0]), 1 / Math.max(.001, projection[5]));
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    state.skyFrameKey = frameKey; state.skyLastPaintAt = performance.now();
+  }
   function drawSkyMap(width, height, dpr, camera) {
     const canvas = state.skyCanvas; if (!canvas) return;
     const frameKey = skyCameraKey(camera, width, height, dpr);
     if (frameKey && frameKey === state.skyFrameKey) return;
+    if (state.skyRenderer) { drawSkyGpu(state.skyRenderer, camera, width, height, dpr, frameKey); return; }
+    const now = performance.now();
+    const minimumFrameTime = state.skyInteracting ? SKY_MOVING_FRAME_MS : SKY_SETTLED_FRAME_MS;
+    if (state.skyFrameKey && now - state.skyLastPaintAt < minimumFrameTime) return;
     if (canvas.width !== width * dpr || canvas.height !== height * dpr) { canvas.width = width * dpr; canvas.height = height * dpr; canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; }
     const context = canvas.getContext('2d'); context.setTransform(dpr, 0, 0, dpr, 0, 0); context.clearRect(0, 0, width, height);
-    if (state.skyTexture) drawNebulaTexture(context, state.skyTexture, camera, width, height);
+    drawProceduralNebula(context, camera, width, height, dpr);
     const forward = skyForward(camera);
     state.skyStars.forEach(star => {
       // Cheap hemisphere culling: a perspective camera cannot see stars behind
@@ -469,7 +807,7 @@
       if (star.band) { context.beginPath(); context.arc(point.x, point.y, star.radius * 4.5, 0, Math.PI * 2); context.fillStyle = star.tone === 'warm' ? 'rgba(185, 96, 46, .035)' : 'rgba(65, 101, 158, .025)'; context.fill(); }
       context.beginPath(); context.arc(point.x, point.y, star.radius, 0, Math.PI * 2); context.fillStyle = `rgba(${color}, ${star.alpha})`; context.fill();
     });
-    state.skyFrameKey = frameKey;
+    state.skyFrameKey = frameKey; state.skyLastPaintAt = now;
   }
   function projectSkyDirection(direction, camera, width, height) {
     const view = camera.matrixWorldInverse.elements, projection = camera.projectionMatrix.elements;
@@ -583,7 +921,7 @@
     // nodePositionUpdate cannot own zoom scaling. Update the actual node meshes
     // from this live visual loop instead.
     updateSystemScreenScales([...state.nodesById.values()], camera, height);
-    drawSkyMap(width, height, dpr, camera);
+    if (!state.skyRenderer) drawSkyMap(width, height, dpr, camera);
     const nearestSystemDistance = Math.min(...[...state.nodesById.values()].map(node => Math.hypot(camera.position.x - node.x, camera.position.y - node.y, camera.position.z - node.z)));
     if (state.filters.gates) {
       // Keep a faint topology trace at galaxy scale instead of fading local gates to zero.
@@ -607,7 +945,7 @@
             { direction: 1, plan: trafficParticlePlan(flows.sourceToTarget) },
             { direction: -1, plan: trafficParticlePlan(flows.targetToSource) },
           ].filter(flow => flow.plan.count);
-          if (directionalFlows.length && Math.hypot(b.x - a.x, b.y - a.y) >= 18) trafficSegments.push({ a, b, flows: directionalFlows, phase: (((Number(gate.source) * 31) ^ Number(gate.target)) >>> 0) % 997 / 997 });
+          if (directionalFlows.length && Math.hypot(b.x - a.x, b.y - a.y) >= 18) trafficSegments.push({ a, b, flows: directionalFlows, worldLength: trafficSegmentWorldLength({ source, target }), phase: (((Number(gate.source) * 31) ^ Number(gate.target)) >>> 0) % 997 / 997 });
         }
         if (routeLeg) {
           if (routeLeg.source === target.id) [a, b] = [b, a];
@@ -649,10 +987,10 @@
         context.beginPath(); context.arc(particleX, particleY, .9 + 1.8 * localFade, 0, Math.PI * 2);
         context.fillStyle = '#fff4bd'; context.fill();
       });
-      trafficSegments.forEach(({ a, b, flows, phase }) => {
+      trafficSegments.forEach(({ a, b, flows, phase, worldLength }) => {
         const dx = b.x - a.x, dy = b.y - a.y, length = Math.hypot(dx, dy) || 1;
         flows.forEach(({ direction, plan }, flowIndex) => {
-          const progress = trafficParticleProgress(now, phase + flowIndex * .37, plan.jumps, length);
+          const progress = trafficSegmentProgress(now, phase + flowIndex * .37, plan.jumps, { worldLength });
           // Each direction owns a separate side of the line. Its tiered
           // particles form a small sequential packet, rather than a row.
           const laneOffset = direction * 2;
@@ -660,20 +998,23 @@
             const packetProgress = (progress - packetOffset + 1) % 1;
             const packetTravel = direction === 1 ? packetProgress : 1 - packetProgress;
             const particle = plan.particles[index];
+            const visual = trafficParticleVisualStyle(particle);
             const x = a.x + dx * packetTravel - dy / length * laneOffset, y = a.y + dy * packetTravel + dx / length * laneOffset;
-            context.beginPath(); context.arc(x, y, 2.7, 0, Math.PI * 2); context.fillStyle = particle.color; context.globalAlpha = .10 * particle.opacity; context.fill();
-            context.beginPath(); context.arc(x, y, 1.05, 0, Math.PI * 2); context.fillStyle = particle.color; context.globalAlpha = particle.opacity; context.fill();
+            context.beginPath(); context.arc(x, y, visual.glowRadius, 0, Math.PI * 2); context.fillStyle = particle.color; context.globalAlpha = visual.glowAlpha; context.fill();
+            context.beginPath(); context.arc(x, y, visual.coreRadius, 0, Math.PI * 2); context.fillStyle = particle.color; context.globalAlpha = visual.coreAlpha; context.fill();
           });
         });
       });
+      context.globalAlpha = 1;
       if (state.filters.traffic || state.filters.danger) {
         for (const node of state.nodesById.values()) {
           if (!visibleNode(node)) continue;
           const point = projectVisible(node, camera, width, height); if (!point) continue;
           const live = liveFor(node);
           if (state.filters.traffic && live.ship_jumps > 0) {
-            const radius = 2 + Math.log1p(live.ship_jumps) / Math.log(50000) * 8;
-            context.beginPath(); context.arc(point.x, point.y, radius, 0, Math.PI * 2); context.fillStyle = 'rgba(106, 226, 255, .13)'; context.fill();
+            const intensity = Math.max(0, Math.min(1, Math.log1p(live.ship_jumps) / Math.log(50000)));
+            const radius = 2.5 + intensity * 8.7;
+            context.beginPath(); context.arc(point.x, point.y, radius, 0, Math.PI * 2); context.fillStyle = `hsla(${190 - intensity * 24}, 92%, 66%, ${.18 + intensity * .20})`; context.fill();
           }
           if (state.filters.danger && live.danger >= 20) {
             const colors = { yellow: '#ffd35f', orange: '#ff913d', red: '#f0546e' };
@@ -828,20 +1169,37 @@
     if (window.ResizeObserver) { state.resizeObserver?.disconnect(); state.resizeObserver = new window.ResizeObserver(resizeMap); state.resizeObserver.observe(host); }
     else window.addEventListener?.('resize', resizeMap);
     enableDistancePicker(host);
-    graph.d3Force('charge', null); graph.d3Force('link', null); graph.d3Force('center', null); graph.cooldownTicks(0); state.graph = graph; render(); startSkyMap(host); startGateOverlay(host, nodes); setTimeout(() => focusHome(), 80);
+    graph.d3Force('charge', null); graph.d3Force('link', null); graph.d3Force('center', null); graph.cooldownTicks(0);
+    const controls = typeof graph.controls === 'function' ? graph.controls() : null;
+    stabilizeOrbitControls(controls); bindSkyQualityControls(controls);
+    state.graph = graph; render(); startSkyMap(host); startGateOverlay(host, nodes); setTimeout(() => focusHome(), 80);
   }
   async function load() { if (state.graph) return; if (!window.ForceGraph3D) throw new Error('La dépendance 3D est indisponible.'); const response = await api().get_eve_map_data(); if (!response.ok) throw new Error(response.error || 'Carte indisponible'); initialize(response.data); }
-  window.openEveMap = async function () { const workspace = mapWorkspace(); if (!workspace) return; workspace.setAttribute('aria-hidden', 'false'); workspace.classList?.add('is-open'); state.visible = true; try { await load(); state.resizeMap && state.resizeMap(); if (!state.linkFrame && state.linkCanvas) state.linkFrame = requestAnimationFrame(drawGateOverlay); state.graph.resumeAnimation(); loadLiveIntel(); loadCharacterPositions(); } catch (error) { document.getElementById('eve-map-canvas').innerHTML = `<div class="eve-map-status">${escapeHtml(error.message)}</div>`; } };
-  window.closeEveMap = function () { const workspace = mapWorkspace(); workspace?.setAttribute('aria-hidden', 'true'); workspace?.classList?.remove('is-open'); state.visible = false; stopGateOverlay(); state.graph && state.graph.pauseAnimation(); };
+  window.openEveMap = async function () { const workspace = mapWorkspace(); if (!workspace) return; workspace.setAttribute('aria-hidden', 'false'); state.visible = true; try { await load(); state.resizeMap && state.resizeMap(); if (!state.linkFrame && state.linkCanvas) state.linkFrame = requestAnimationFrame(drawGateOverlay); startSkyFrame(); state.graph.resumeAnimation(); loadLiveIntel(); await loadCharacterPositions(); startCharacterPositionTracking(); } catch (error) { document.getElementById('eve-map-canvas').innerHTML = `<div class="eve-map-status">${escapeHtml(error.message)}</div>`; } };
+  window.closeEveMap = function () { const workspace = mapWorkspace(); workspace?.setAttribute('aria-hidden', 'true'); state.visible = false; stopCharacterPositionTracking(); stopGateOverlay(); stopSkyFrame(); state.graph && state.graph.pauseAnimation(); };
   window.setEveMapOrigin = id => setEndpoint('origin', id);
   window.setEveMapDestination = id => setEndpoint('destination', id);
   window.useEveMapSafeRoute = () => updateRoute(true);
   window.focusEveMapSystem = id => focus(systemFor(id));
-  if (window.__eveMapTest) { window.__eveMapTest.clipSegmentToViewport = clipSegmentToViewport; window.__eveMapTest.projectGateSegment = projectGateSegment; window.__eveMapTest.characterColor = characterColor; window.__eveMapTest.characterMarkerScale = characterMarkerScale; window.__eveMapTest.systemObjectScale = systemObjectScale; window.__eveMapTest.estimateGateTraffic = estimateGateTraffic; window.__eveMapTest.estimateGateFlows = estimateGateFlows; window.__eveMapTest.trafficParticlePlan = trafficParticlePlan; window.__eveMapTest.trafficPacketOffsets = trafficPacketOffsets; window.__eveMapTest.trafficParticleSpeed = trafficParticleSpeed; window.__eveMapTest.trafficParticleProgress = trafficParticleProgress; window.__eveMapTest.shipIconUrl = shipIconUrl; window.__eveMapTest.formatKillDate = formatKillDate; window.__eveMapTest.killLocation = killLocation; window.__eveMapTest.attackerPopoverMarkup = attackerPopoverMarkup; window.__eveMapTest.influenceOverlayRadius = influenceOverlayRadius; window.__eveMapTest.influenceOverlayStyle = influenceOverlayStyle; window.__eveMapTest.influenceLayers = influenceLayers; window.__eveMapTest.cappedSystemObjectScale = cappedSystemObjectScale; window.__eveMapTest.updateSystemScreenScales = updateSystemScreenScales; window.__eveMapTest.cameraPose = cameraPose; window.__eveMapTest.galaxyShot = galaxyShot; window.__eveMapTest.visibleLabelGroup = visibleLabelGroup; window.__eveMapTest.isAreaMember = isAreaMember; window.__eveMapTest.focusNodeColor = focusNodeColor; window.__eveMapTest.buildSkyStars = buildSkyStars; window.__eveMapTest.skyCameraKey = skyCameraKey; window.__eveMapTest.skyTextureDirection = skyTextureDirection; window.__eveMapTest.worldSkyDirection = worldSkyDirection; window.__eveMapTest.projectSkyDirection = projectSkyDirection; }
+  window.focusEveMapCharacter = id => focusCharacterPosition(id);
+  window.clearEveMapCharacterSelection = clearCharacterSelection;
+  window.refreshEveMapCharacterPositions = () => loadCharacterPositions();
+  if (window.__eveMapTest) {
+    Object.assign(window.__eveMapTest, {
+      clipSegmentToViewport, projectGateSegment, characterColor, characterMarkerScale, systemObjectScale,
+      estimateGateTraffic, estimateGateFlows, trafficParticlePlan, trafficPacketOffsets, trafficParticleSpeed, trafficParticleProgress, trafficSegmentProgress, trafficParticleVisualStyle,
+      shipIconUrl, formatKillDate, killLocation, attackerPopoverMarkup,
+      influenceOverlayRadius, influenceOverlayStyle, influenceLayers, cappedSystemObjectScale, updateSystemScreenScales,
+      displayNodes, cameraPose, galaxyShot, visibleLabelGroup, labelsCanOverlap, mapLabelLayers, mapLabelPlacement, isAreaMember, focusNodeColor, characterPositionTrackingInterval, characterPositionSystemId, visibleCharacterIds,
+      buildSkyStars, skyCameraKey, skyTextureDirection, worldSkyDirection, skyRayDirection, skyFieldDimensions,
+      nebulaColor, skyTextureCoordinates, skyTexturePacked, skyGpuFragmentShader: SKY_GPU_FRAGMENT_SHADER, stabilizeOrbitControls, projectSkyDirection
+    });
+  }
   function bindControls() {
     document.querySelectorAll('[data-eve-security], #eve-map-gates, #eve-map-traffic, #eve-map-danger, #eve-map-sovereignty, #eve-map-empires').forEach(input => input.addEventListener('change', () => { const key = input.dataset.eveSecurity || input.id.replace('eve-map-', ''); state.filters[key] = input.checked; if (key === 'sovereignty') { const indicator = document.getElementById('eve-map-sovereignty-state'); if (input.checked) loadSovereignty(); else if (indicator) indicator.textContent = 'off'; } render(); }));
-    document.getElementById('eve-map-character').addEventListener('change', event => { state.selectedCharacterId = event.target.value || null; const character = state.characters.find(row => String(row.character_id) === String(state.selectedCharacterId)); if (character) focus(systemFor(character.system_id)); });
+    document.getElementById('eve-map-character').addEventListener('change', event => { state.selectedCharacterId = event.target.value || null; const character = state.characters.find(row => String(row.character_id) === String(state.selectedCharacterId)); startCharacterPositionTracking(); if (character) focus(systemFor(character.system_id)); });
     document.getElementById('eve-map-fit').addEventListener('click', () => focusHome());
+    document.getElementById('eve-map-reset-camera')?.addEventListener('click', () => focusHome(420));
     document.getElementById('eve-map-search').addEventListener('input', event => { const query = event.target.value.trim().toLowerCase(); const box = document.getElementById('eve-map-results'); box.innerHTML = ''; if (!query || !state.data) return; state.data.systems.filter(s => s.name.toLowerCase().includes(query)).slice(0, 8).forEach(s => { const button = document.createElement('button'); button.textContent = `${s.name} · ${s.region}`; button.onclick = () => { box.innerHTML = ''; focus(s); }; box.appendChild(button); }); });
     document.getElementById('eve-map-route').addEventListener('click', () => { const systems = state.data && state.data.systems || []; const resolve = value => systems.find(s => String(s.id) === value.trim() || s.name.toLowerCase() === value.trim().toLowerCase()); const from = resolve(document.getElementById('eve-route-from').value), to = resolve(document.getElementById('eve-route-to').value), result = document.getElementById('eve-route-result'); if (!from || !to) { result.textContent = 'Systèmes introuvables.'; return; } state.originId = from.id; state.destinationId = to.id; updateRoute(); });
   }

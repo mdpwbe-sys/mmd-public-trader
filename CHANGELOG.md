@@ -4,6 +4,18 @@ Tous les changements notables sont documentés ici. Le format suit les
 principes de [Keep a Changelog](https://keepachangelog.com/), le versionnage
 est en [SemVer](https://semver.org/).
 
+## [0.1.4] — 2026-09-03
+
+### Ajouté
+- **New Eden 3D Tactical Map** : positions SDE et stargates authentiques, recherche/focus caméra, labels région/constellation/système selon le zoom, route avec alternative high-sec et marqueurs EVE-style.
+- **Live tactical overlays** : Traffic et Danger depuis ESI public avec cache résilient ; flux par gate représentés par des particules directionnelles estimées depuis les totaux de sauts des deux systèmes.
+- **Influence & intel** : couches Player Sov (null-sec joueur uniquement) et Empires & NPC ; détails zKillboard au clic, chargés paresseusement et mis en cache.
+- **Pilot map tracking (opt-in)** : la position des personnages ESI ayant autorisé `esi-location.read_location.v1` est actualisée toutes les 15 secondes tant que la carte est ouverte. Le suivi s'arrête dès la fermeture de la carte.
+
+### Corrigé
+- Les personnages révoqués ou sans access token ne sont plus présentés comme connectés ; les profils importés restent visibles mais éteints.
+- Le rendu de carte est synchronisé avec le fond céleste optimisé, les halos d'influence et la taille des systèmes plafonnée en pixels.
+
 ## [0.1.3] — 2026-08-22
 
 ### Ajouté

@@ -1,6 +1,6 @@
 # New Eden 3D Map
 
-The **New Eden** title-bar action opens a self-contained topology view. Its geometry and routing remain offline; optional Traffic, Danger and Player Sov overlays use cached public ESI data. Character markers are the sole authenticated layer and require the already-selected location scope. The map never changes OAuth scopes or reads corporation data.
+The **New Eden** title-bar action opens a self-contained topology view. Its geometry and routing remain offline; optional Traffic, Danger and Player Sov overlays use cached public ESI data. Character markers are the sole authenticated layer: users may grant `esi-location.read_location.v1` during their own SSO consent, then the map refreshes their position every 15 seconds only while open. The map never changes OAuth scopes or reads corporation data.
 
 `gui/data/eve_map.json` is built from CCP's official JSONL SDE. `position_m` retains CCP's original metre coordinates; `position` is only the normalized visual projection. The browser consumes the latter while route and distance tools retain the former.
 

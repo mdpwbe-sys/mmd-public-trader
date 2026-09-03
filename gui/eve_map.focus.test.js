@@ -25,9 +25,10 @@ test('search result focuses the rendered node coordinates', async () => {
     { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 0, y: 0, z: 0 } },
     { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 1, y: 0, z: 0 } },
   ], gates: [{ source: 30000142, target: 30000144 }] };
+  let pilotSystemId = 30000142;
   let onMapResize;
   class ResizeObserver { constructor(callback) { onMapResize = callback; } observe() {} disconnect() {} }
-  const window = { __eveMapTest: {}, ResizeObserver, api: { async get_eve_map_data() { return { ok: true, data: dataset }; }, async get_eve_map_live_intel() { return { ok: true, state: 'live', age_seconds: 0, systems: { 30000142: { ship_jumps: 42315, ship_kills: 7, pod_kills: 2, npc_kills: 183, danger: 63, danger_band: 'orange' } } }; }, async get_eve_map_character_positions() { return { ok: true, positions: [{ character_id: 1, name: 'Pilot', system_id: 30000142 }, { character_id: 2, name: 'Wingmate', system_id: 30000142 }] }; }, async find_eve_route(source, target) { return { ok: true, data: { systems: [source, target], jumps: 1 } }; } }, ForceGraph3D: () => () => graph };
+  const window = { __eveMapTest: {}, ResizeObserver, api: { async get_eve_map_data() { return { ok: true, data: dataset }; }, async get_eve_map_live_intel() { return { ok: true, state: 'live', age_seconds: 0, systems: { 30000142: { ship_jumps: 42315, ship_kills: 7, pod_kills: 2, npc_kills: 183, danger: 63, danger_band: 'orange' } } }; }, async get_eve_map_character_positions() { return { ok: true, positions: [{ character_id: 1, name: 'Pilot', system_id: pilotSystemId }, { character_id: 2, name: 'Wingmate', system_id: 30000142 }] }; }, async find_eve_route(source, target) { return { ok: true, data: { systems: [source, target], jumps: 1 } }; } }, ForceGraph3D: () => () => graph };
   const context = vm.createContext({ window, document: { readyState: 'loading', getElementById(id) { return elements.get(id); }, querySelectorAll() { return []; }, createElement() { return element(); }, addEventListener(type, callback) { documentListeners[type] = callback; } }, ForceGraph3D: window.ForceGraph3D, requestAnimationFrame() { return 1; }, cancelAnimationFrame() {}, setTimeout() {}, performance: { now() { return 100; } }, Math, Map, Set, Object, String });
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), context);
   documentListeners.DOMContentLoaded();
@@ -48,6 +49,15 @@ test('search result focuses the rendered node coordinates', async () => {
   assert.match(elements.get('eve-map-panel').innerHTML, /Pilotes actifs/);
   assert.match(elements.get('eve-map-panel').innerHTML, /<br>/);
   assert.notEqual(window.__eveMapTest.characterColor({ character_id: 1 }), window.__eveMapTest.characterColor({ character_id: 2 }));
+  assert.equal(await window.focusEveMapCharacter(1), true, 'une puce personnage peut focaliser la carte sur sa position ESI');
+  assert.equal(graph.lastCamera.target.id, 30000142);
+  assert.equal(elements.get('eve-map-character').value, '1', 'le sélecteur de la carte suit la puce du dashboard');
+  pilotSystemId = 30000144;
+  assert.equal(await window.refreshEveMapCharacterPositions(), true, 'un changement de système détecté par ESI met à jour le suivi');
+  assert.equal(window.__eveMapTest.characterPositionSystemId(1), 30000144, 'le marqueur personnage reçoit immédiatement le nouveau système après un jump');
+  assert.equal(graph.lastCamera.target.id, 30000144, 'le pilote sélectionné entraîne la caméra vers son nouveau système après un jump');
+  window.clearEveMapCharacterSelection();
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.visibleCharacterIds())), [1, 2], 'revenir à Tous les pilotes réaffiche les marqueurs de chaque pilote connecté');
   window.setEveMapOrigin(30000142);
   window.setEveMapDestination(30000144);
   await new Promise(resolve => setTimeout(resolve, 0));
@@ -72,9 +82,31 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   const focusPose = window.__eveMapTest.cameraPose({ x: 0, y: 0, z: 0 }, 100);
   const homeDirection = { x: jitaShot.position.x - jitaShot.target.x, y: jitaShot.position.y - jitaShot.target.y, z: jitaShot.position.z - jitaShot.target.z };
   assert.ok(Math.abs(focusPose.x / focusPose.y - homeDirection.x / homeDirection.y) < 1e-9 && Math.abs(focusPose.z / focusPose.y - homeDirection.z / homeDirection.y) < 1e-9, 'les focus système restent dans le plan de caméra New Eden');
+  const planarNodes = window.__eveMapTest.displayNodes([
+    { id: 1, position_m: { x: 0, y: -9000, z: 0 } },
+    { id: 2, position_m: { x: 400, y: 12000, z: 600 } },
+  ], [{ source: 1, target: 2 }]);
+  assert.notEqual(planarNodes[0].y, planarNodes[1].y, 'la carte conserve la profondeur 3D authentique de New Eden');
+  const flatControls = { target: { x: 4, y: 23, z: -8 }, object: { up: { set(x, y, z) { this.value = [x, y, z]; } } } };
+  window.__eveMapTest.stabilizeOrbitControls(flatControls);
+  assert.equal(flatControls.target.y, 23, 'le contrôle ne déforme pas la profondeur de la cible caméra');
+  assert.ok(flatControls.minPolarAngle > 0 && flatControls.maxPolarAngle < Math.PI / 2, 'la rotation ne franchit plus les pôles de la carte plane');
+  assert.equal(flatControls.screenSpacePanning, false, 'le clic droit reste projeté sur le plan de New Eden');
+  assert.match(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'), /id="eve-map-reset-camera"/, 'la barre de carte expose un bouton de réinitialisation caméra');
   const lowOnly = { securityCounts: { high: 0, low: 4, null: 0 } };
   assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: false, null: false }), false);
   assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: true, null: false }), true);
+  assert.equal(window.__eveMapTest.characterPositionTrackingInterval(true), 15000, 'le tracking ESI actualise tous les pilotes connectés lorsque la carte est ouverte');
+  assert.equal(window.__eveMapTest.characterPositionTrackingInterval(false), null, 'le tracking ESI est arrêté lorsque la carte est masquée');
+  assert.equal(window.__eveMapTest.labelsCanOverlap('region'), true, 'les noms de région restent tous visibles à l’échelle galaxie, même lorsqu’ils se superposent');
+  assert.equal(window.__eveMapTest.labelsCanOverlap('constellation'), false, 'les constellations conservent leur filtre anti-chevauchement');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelPlacement('region', { x: 2, y: 4 }, 80, 320, 180))), { x: 46, y: 12 }, 'un libellé de région est décalé dans le viewport au lieu d’être tronqué sur un bord');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelPlacement('region', { x: 318, y: 178 }, 80, 320, 180))), { x: 274, y: 168 }, 'un libellé de région reste entièrement lisible près du bord opposé');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelLayers(1200))), [{ mode: 'region', opacity: 1 }], 'la vue galaxie privilégie les régions');
+  const crossoverLabels = window.__eveMapTest.mapLabelLayers(900);
+  assert.equal(crossoverLabels.length, 2, 'la transition région/constellation affiche les deux couches simultanément');
+  assert.ok(crossoverLabels.every(layer => layer.opacity > 0 && layer.opacity < 1), 'la transition région/constellation est progressive');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelLayers(500))), [{ mode: 'constellation', opacity: 1 }], 'la vue région privilégie les constellations après le fondu');
   const regionFocus = { kind: 'region', area: { id: 7 } };
   assert.equal(window.__eveMapTest.isAreaMember({ region_id: 7, constellation_id: 3 }, regionFocus), true);
   assert.equal(window.__eveMapTest.isAreaMember({ region_id: 8, constellation_id: 3 }, regionFocus), false);
@@ -86,15 +118,15 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(300, 'sovereignty'), 'la souveraineté se regroupe visuellement à distance');
   assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(3000, 'empire'), 'la souveraineté garde une présence distincte au dézoom');
   const empireLayers = window.__eveMapTest.influenceLayers({ faction_id: 500001 }, { sovereignty: false, empires: true }, { alliance_id: 99000001 });
-  assert.deepEqual(JSON.parse(JSON.stringify(empireLayers)), [{ id: 500001, alpha: .24, kind: 'empire', offset: 0 }], 'l’Empire/NPC SDE reste visible même si le cache Sov connaît un propriétaire');
+  assert.deepEqual(JSON.parse(JSON.stringify(empireLayers)), [{ id: 500001, alpha: .40, kind: 'empire', offset: 0 }], 'l’Empire/NPC SDE garde la même présence que Player Sov même si le cache Sov connaît un propriétaire');
   assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.influenceLayers({ security: -.4 }, { sovereignty: true, empires: false }, { faction_id: 500007 }))), [], 'Player Sov exclut les propriétaires NPC/pirates même en null-sec');
   assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.influenceLayers({ security: .9 }, { sovereignty: true, empires: false }, { alliance_id: 99000001 }))), [], 'Player Sov exclut le high-sec');
   assert.equal(window.__eveMapTest.influenceLayers({ security: -.4 }, { sovereignty: true, empires: false }, { alliance_id: 99000001 })[0].kind, 'sovereignty', 'Player Sov conserve les alliances en null-sec');
   const empireRegional = window.__eveMapTest.influenceOverlayStyle(700, 'empire');
   const empireGalaxy = window.__eveMapTest.influenceOverlayStyle(3000, 'empire');
   const sovereigntyRegional = window.__eveMapTest.influenceOverlayStyle(700, 'sovereignty');
-  assert.ok(empireRegional.radius >= 5 && empireRegional.opacity >= .5, 'Empire/NPC reste nettement lisible en vue rapprochée');
-  assert.ok(sovereigntyRegional.radius > empireRegional.radius && sovereigntyRegional.opacity > empireRegional.opacity, 'Player Sov est plus large et opaque qu’Empire/NPC en vue rapprochée');
+  assert.ok(empireRegional.radius > 7 && empireRegional.opacity >= .5, 'Empire/NPC reste plus large que le node système et lisible en vue rapprochée');
+  assert.ok(sovereigntyRegional.radius > empireRegional.radius && sovereigntyRegional.opacity === empireRegional.opacity, 'Player Sov garde un diamètre supérieur, mais la même opacité qu’Empire/NPC');
   assert.ok(empireGalaxy.radius > empireRegional.radius && empireGalaxy.opacity >= .32, 'Empire/NPC garde une masse lisible à l’échelle galaxie');
   const inferredGateTraffic = window.__eveMapTest.estimateGateTraffic({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
   assert.equal(inferredGateTraffic, 100, 'le trafic de gate est une estimation équilibrée depuis les deux systèmes');
@@ -112,6 +144,11 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.trafficPacketOffsets(3))), [0, .052, .104], 'les trois particules circulent en paquet séquentiel');
   assert.ok(window.__eveMapTest.trafficParticleSpeed(5000) > window.__eveMapTest.trafficParticleSpeed(10), 'un trafic plus intense accélère son paquet');
   assert.ok(window.__eveMapTest.trafficParticleProgress(1000, 0, 100, 400) < window.__eveMapTest.trafficParticleProgress(1000, 0, 100, 40), 'une liaison longue prend davantage de temps à parcourir');
+  const shortProjectedGate = { source: { x: 0, y: 0, z: 0 }, target: { x: 0, y: 0, z: 80 }, screenLength: 24 };
+  const longProjectedGate = { ...shortProjectedGate, screenLength: 860 };
+  assert.equal(window.__eveMapTest.trafficSegmentProgress(1000, .3, 750, shortProjectedGate), window.__eveMapTest.trafficSegmentProgress(1000, .3, 750, longProjectedGate), 'le mouvement traffic est invariant quand la caméra change la longueur écran du même lien');
+  const trafficVisual = window.__eveMapTest.trafficParticleVisualStyle(window.__eveMapTest.trafficParticlePlan(1001).particles[2]);
+  assert.ok(trafficVisual.coreAlpha >= .95 && trafficVisual.glowAlpha >= .18, 'les pastilles traffic gardent un cœur saturé et un halo lisible');
   assert.equal(window.__eveMapTest.shipIconUrl(587), 'https://images.evetech.net/types/587/icon?size=64', 'un type de vaisseau construit son icône publique');
   assert.equal(window.__eveMapTest.shipIconUrl('not-a-type'), null, 'une valeur de type invalide ne devient jamais une URL image');
   const attackerMarkup = window.__eveMapTest.attackerPopoverMarkup({ total_attackers: 2, attackers: [{ pilot_name: 'Hunter', ship_name: 'Rifter', ship_type_id: 587, final_blow: true, damage_done: 1234 }] });
@@ -138,9 +175,33 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.ok(Math.abs(textureDirection.x) < 1e-9 && Math.abs(textureDirection.z - 1) < 1e-9, 'la panoramique reçoit le quart de tour autour de l’axe vertical');
   const restoredDirection = window.__eveMapTest.worldSkyDirection(textureDirection);
   assert.ok(Math.abs(restoredDirection.x - 1) < 1e-9 && Math.abs(restoredDirection.z) < 1e-9, 'le repère texture et le repère monde restent inverses');
+  const controls = {};
+  window.__eveMapTest.stabilizeOrbitControls(controls);
+  assert.ok(controls.minPolarAngle > 0 && controls.maxPolarAngle < Math.PI, 'l’orbite ne traverse jamais la singularité visuelle des pôles');
+  const settledSkyField = window.__eveMapTest.skyFieldDimensions(1920, 1080, 1, false);
+  const movingSkyField = window.__eveMapTest.skyFieldDimensions(1920, 1080, 1, true);
+  assert.ok(settledSkyField.width * settledSkyField.height > movingSkyField.width * movingSkyField.height, 'la qualité du fond augmente après le mouvement caméra');
+  assert.ok(settledSkyField.width * settledSkyField.height <= 365000, 'le fond calculé garde un budget de pixels borné');
+  assert.match(window.__eveMapTest.skyGpuFragmentShader, /texture2D\(uSkyTexture/, 'le fond normal est projeté par le GPU depuis la texture');
+  assert.match(window.__eveMapTest.skyGpuFragmentShader, /nearStarLayer/, 'une couche d’étoiles proches reste calculée dans le même shader GPU');
+  assert.doesNotMatch(window.__eveMapTest.skyGpuFragmentShader, /proceduralNebulaPacked/, 'le chemin GPU ne réintroduit pas de raster procédural CPU');
+  const skyAsset = fs.readFileSync(path.join(__dirname, 'data/sky/new-eden-sky-equirect-v2.png'));
+  assert.equal(skyAsset.readUInt32BE(16), skyAsset.readUInt32BE(20) * 2, 'la texture utilisée reste un panorama equirectangulaire 2:1');
+  const packedTexture = window.__eveMapTest.skyTexturePacked({ width: 2, height: 2, pixels: new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]) }, 1, 0, 0);
+  assert.equal(packedTexture, (10 << 16) | (11 << 8) | 12, 'la texture equirectangulaire est échantillonnée depuis la direction céleste calculée');
+  const band = window.__eveMapTest.nebulaColor(1, 0, 0), pole = window.__eveMapTest.nebulaColor(0, 1, 0);
+  assert.ok(band.g + band.b > pole.g + pole.b, 'le fallback procédural conserve une bande galactique cohérente dans le repère monde');
+  assert.match(fs.readFileSync(path.join(__dirname, 'eve_map.css'), 'utf8'), /\.eve-map-canvas \.scene-container \{[^}]*z-index:1/, 'le rendu WebGL est au-dessus du canevas de nébuleuse');
   const skyCamera = { matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 99, -22, 8, 1] }, projectionMatrix: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -1, 0, 0, 0, 1] } };
   const movedSkyCamera = { matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -300, 17, 40, 1] }, projectionMatrix: skyCamera.projectionMatrix };
   assert.equal(window.__eveMapTest.skyCameraKey(skyCamera, 800, 600, 1), window.__eveMapTest.skyCameraKey(movedSkyCamera, 800, 600, 1), 'une translation ne recalcule pas la sphère infiniment lointaine');
+  const sideCamera = { matrixWorld: { elements: [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1] }, projectionMatrix: skyCamera.projectionMatrix };
+  const upperSkyRay = window.__eveMapTest.skyRayDirection(sideCamera, 0, .65);
+  const lowerSkyRay = window.__eveMapTest.skyRayDirection(sideCamera, 0, -.65);
+  assert.ok(upperSkyRay.y > 0 && lowerSkyRay.y < 0, 'en vue latérale, un mouvement vertical de la carte reste vertical dans le repère céleste New Eden');
+  const upperTextureCoordinate = window.__eveMapTest.skyTextureCoordinates(upperSkyRay.x, upperSkyRay.y, upperSkyRay.z);
+  const lowerTextureCoordinate = window.__eveMapTest.skyTextureCoordinates(lowerSkyRay.x, lowerSkyRay.y, lowerSkyRay.z);
+  assert.ok(Math.abs(upperTextureCoordinate.u - lowerTextureCoordinate.u) < 1e-9 && upperTextureCoordinate.v < lowerTextureCoordinate.v, 'le glissement vertical échantillonne la latitude de la texture, jamais une translation horizontale');
   const identityCamera = { matrixWorldInverse: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1] }, projectionMatrix: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -1, 0, 0, 0, 1] } };
   assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.projectSkyDirection({ x: 0, y: 0, z: -1 }, identityCamera, 800, 600))), { x: 400, y: 300 });
   assert.equal(window.__eveMapTest.projectSkyDirection({ x: 0, y: 0, z: 1 }, identityCamera, 800, 600), null);

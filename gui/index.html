@@ -954,12 +954,33 @@ Total output lines: 2695
   }
 
   function selectChar(name) {
-    const c = (window.__ssoChars || []).find(x => x.name === name);
-    window.__selChar = c ? c.id : null;
+    window.__selChar = characterIdForName(name);
     window.__state.selIndex = -1;
     refreshSsoChips(window.__ssoChars);
     updateDynamicMetrics();
     renderTable();
+    const mapIsOpen = document.getElementById('eve-map-overlay')?.getAttribute('aria-hidden') === 'false';
+    if (mapIsOpen && window.__selChar != null) {
+      void window.focusEveMapCharacter?.(window.__selChar);
+    } else if (mapIsOpen) {
+      window.clearEveMapCharacterSelection?.();
+    }
+  }
+
+  function characterIdForName(name) {
+    if (name == null) return null;
+    const connected = (window.__ssoChars || []).find(x => x.name === name);
+    if (connected && connected.id != null) return connected.id;
+    const imported = (window.__state?.orders || []).find(order => order.char_name === name && order.char_id != null);
+    return imported ? imported.char_id : null;
+  }
+
+  function characterNameForId(id) {
+    if (id == null) return null;
+    const connected = (window.__ssoChars || []).find(x => String(x.id) === String(id));
+    if (connected) return connected.name;
+    const imported = (window.__state?.orders || []).find(order => String(order.char_id) === String(id));
+    return imported ? imported.char_name : null;
   }
 
   function openItem(typeId, charId) {
@@ -1118,13 +1139,13 @@ Total output lines: 2695
   }
   function refreshSsoChips(entries) {
     // entries = liste de strings (noms) OU objets {id, name}
-    if (entries && entries.length) {
-      window.__ssoChars = entries.map(n => typeof n === 'string' ? { name: n } : n);
-    }
+    if (Array.isArray(entries)) window.__ssoChars = entries.map(n => typeof n === 'string' ? { name: n } : n);
     const ch = document.getElementById('chars');
     if (!ch) return;
-    const ssoSet = new Set(window.__ssoChars.map(c => c.name));
-    const selName = (window.__ssoChars.find(c => String(c.id) === String(window.__selChar)) || {}).name;
+    const characterKey = value => String(value || '').trim().toLowerCase();
+    const ssoByName = new Map(window.__ssoChars.map(c => [characterKey(c.name), c]));
+    const ssoErrors = new Set((window.__ssoErrors || []).map(characterKey));
+    const selName = characterNameForId(window.__selChar);
     const all = window.__allChars && window.__allChars.length ? window.__allChars : window.__ssoChars.map(c => c.name);
     ch.innerHTML = '';
     // chip "Tous" = deselection (vue globale, pour voir les doublons inter-persos)
@@ -1135,14 +1156,16 @@ Total output lines: 2695
     t.onclick = () => selectChar(null);
     ch.appendChild(t);
     all.forEach((c) => {
-      const lit = ssoSet.has(c);
-      const err = (window.__ssoErrors || []).includes(c);
+      const connection = ssoByName.get(characterKey(c));
+      const err = ssoErrors.has(characterKey(c));
+      const lit = Boolean(connection && connection.scopes_ok !== false && !err);
+      const partial = Boolean(connection && !lit && !err);
       const d = document.createElement('div');
       d.className = 'chip' + (err ? ' err' : (lit ? ' lit' : '')) + (c === selName ? ' sel' : '');
-      d.title = err ? 'Erreur ESI (token expiré/révoqué) — reconnecte' : (lit ? 'Connecté (SSO) — clic pour filtrer ses ordres' : 'Non connecté');
+      d.title = err ? 'Erreur ESI (token expiré/révoqué) — reconnecte' : (lit ? 'Connecté (SSO) — clic pour filtrer ses ordres' : (partial ? 'Connexion ESI incomplète — données importées conservées' : 'Données importées uniquement — ESI non connecté'));
       const ledStyle = getCharLedStyle(c);
       d.innerHTML = `<span class="led" style="${ledStyle};margin-right:6px;vertical-align:middle;display:inline-block"></span>${escapeHtml(c)}`;
-      if (lit && !err) d.onclick = () => selectChar(c);
+      if (characterIdForName(c) != null) d.onclick = () => selectChar(c);
       ch.appendChild(d);
     });
   }
@@ -2103,7 +2126,7 @@ Total output lines: 2695
 <div id="eve-map-overlay" class="eve-map-overlay" aria-hidden="true">
   <section class="eve-map-dialog" role="dialog" aria-modal="true" aria-labelledby="eve-map-title">
     <header class="eve-map-header"><div><div class="eve-map-kicker">OFFLINE NAVIGATION</div><h2 id="eve-map-title">New Eden</h2></div><button class="modal-x" onclick="closeEveMap()" aria-label="Close map">&times;</button></header>
-    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><span class="eve-live-divider">LIVE DATA</span><label title="Public ESI traffic distributed across gates as an estimate"><input type="checkbox" id="eve-map-traffic"> Traffic flow</label><label><input type="checkbox" id="eve-map-danger"> Danger</label><span class="eve-live-divider">INFLUENCE</span><label><input type="checkbox" id="eve-map-sovereignty"> Player Sov</label><small id="eve-map-sovereignty-state" class="eve-map-overlay-state">off</small><label><input type="checkbox" id="eve-map-empires"> Empires &amp; NPC</label><select id="eve-map-character" aria-label="Active character"><option value="">All pilots</option></select><button class="btn mini" id="eve-map-fit">Home · New Eden</button></div>
+    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><span class="eve-live-divider">LIVE DATA</span><label title="Public ESI traffic distributed across gates as an estimate"><input type="checkbox" id="eve-map-traffic"> Traffic flow</label><label><input type="checkbox" id="eve-map-danger"> Danger</label><span class="eve-live-divider">INFLUENCE</span><label><input type="checkbox" id="eve-map-sovereignty"> Player Sov</label><small id="eve-map-sovereignty-state" class="eve-map-overlay-state">off</small><label><input type="checkbox" id="eve-map-empires"> Empires &amp; NPC</label><select id="eve-map-character" aria-label="Active character"><option value="">All pilots</option></select><button class="btn mini" id="eve-map-fit">Home · New Eden</button><button class="btn mini" id="eve-map-reset-camera" title="Restore the default New Eden view">Reset camera</button></div>
     <main class="eve-map-content"><div id="eve-map-canvas" class="eve-map-canvas"><div class="eve-map-status">Loading topology…</div></div><aside id="eve-map-panel" class="eve-map-panel"><div class="eve-map-empty">Select a system.</div><div class="eve-map-route"><input id="eve-route-from" placeholder="From (ID or system)"><input id="eve-route-to" placeholder="To (ID or system)"><button class="btn mini" id="eve-map-route">Route</button><div id="eve-route-result"></div></div></aside></main>
   </section>
 </div>

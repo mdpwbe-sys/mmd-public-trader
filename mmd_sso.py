@@ -24,6 +24,7 @@ Scopes demandes (lecture seule, a enregistrer dans l'app CCP):
   esi-characters.read_blueprints.v1
   esi-characters.read_standings.v1
   esi-skills.read_skills.v1
+  esi-location.read_location.v1
 """
 import os, json, time, threading, base64, hashlib, html, secrets
 import urllib.parse, urllib.request, urllib.error
@@ -51,6 +52,7 @@ SCOPES = [
     "esi-characters.read_blueprints.v1",
     "esi-characters.read_standings.v1",
     "esi-skills.read_skills.v1",
+    "esi-location.read_location.v1",
 ]
 
 _login_result = {}
@@ -137,6 +139,7 @@ CAPABILITY_SCOPES = {
     "character_contracts": {"esi-contracts.read_character_contracts.v1"},
     "corporation_contracts": {"esi-contracts.read_corporation_contracts.v1"},
     "corporation_divisions": {"esi-corporations.read_divisions.v1"},
+    "character_location": {"esi-location.read_location.v1"},
 }
 
 
@@ -179,6 +182,8 @@ def connected_chars():
     cs = _chars()
     out = []
     for cid, c in cs.items():
+        if not str(c.get("access_token") or "").strip():
+            continue
         s_ok = check_scopes_ok(c)
         out.append({
             "id": int(cid),
