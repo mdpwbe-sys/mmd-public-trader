@@ -1026,7 +1026,7 @@
       context.beginPath(); context.moveTo(point.x - underlineWidth / 2, underlineY); context.lineTo(point.x + underlineWidth / 2, underlineY);
       context.strokeStyle = activity.color; context.globalAlpha = (.38 + pulse * .18) * (.45 + life * .55);
       context.lineWidth = group.count >= 2 ? 2.2 : 1.45; context.stroke();
-      if (group.count >= 2) {
+      if (group.count >= 1) {
         context.font = '700 12px system-ui, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'bottom';
         context.fillStyle = activity.color; context.globalAlpha = .72 + pulse * .24; context.fillText(`${activity.symbol} ${group.count}`, point.x, underlineY - 4);
       }
