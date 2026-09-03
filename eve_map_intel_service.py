@@ -14,7 +14,6 @@ import gzip
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from platform_state import state_path
 
 
 ESI_BASE = "https://esi.evetech.net/latest"
@@ -25,7 +24,7 @@ ZKILL_TTL_SECONDS = 10 * 60
 ENTITY_NAME_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_KILL_ATTACKERS = 20
 ZKILL_USER_AGENT = os.environ.get(
-    "MMD_MAP_USER_AGENT", "EVE-Market-Manager/1.0 (configure MMD_MAP_USER_AGENT)"
+    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd)"
 )
 
 
@@ -47,7 +46,8 @@ def danger_band(score: int) -> str:
 
 class EveMapIntelService:
     def __init__(self, cache_path: Path | None = None, now=time.time, fetch_json=None, fetch_names=None):
-        self.cache_path = Path(cache_path or state_path("eve_map_intel.json"))
+        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+        self.cache_path = Path(cache_path or local / "evernus.com" / "Evernus" / "cache" / "eve_map_intel.json")
         self.now = now
         self.fetch_json = fetch_json or self._fetch_esi
         self.fetch_names = fetch_names or self._fetch_entity_names

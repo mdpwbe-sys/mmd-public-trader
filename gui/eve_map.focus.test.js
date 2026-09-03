@@ -98,6 +98,10 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: true, null: false }), true);
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(true), 15000, 'le tracking ESI actualise tous les pilotes connectés lorsque la carte est ouverte');
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(false), null, 'le tracking ESI est arrêté lorsque la carte est masquée');
+  const skyShader = window.__eveMapTest.skyGpuFragmentShader;
+  assert.match(skyShader, /float nebulaDensity/, 'le gaz repose sur un champ de nuages stable plutôt que sur un motif de rubans');
+  assert.doesNotMatch(skyShader, /gasRibbon/, 'aucune sinusoïde visible ne doit découper le fond en bandes');
+  assert.match(skyShader, /uSkyDebugMode/, 'le champ de gaz et la coquille d’étoiles restent inspectables en debug');
   assert.equal(window.__eveMapTest.labelsCanOverlap('region'), true, 'les noms de région restent tous visibles à l’échelle galaxie, même lorsqu’ils se superposent');
   assert.equal(window.__eveMapTest.labelsCanOverlap('constellation'), false, 'les constellations conservent leur filtre anti-chevauchement');
   assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelPlacement('region', { x: 2, y: 4 }, 80, 320, 180))), { x: 46, y: 12 }, 'un libellé de région est décalé dans le viewport au lieu d’être tronqué sur un bord');
@@ -185,8 +189,12 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.match(window.__eveMapTest.skyGpuFragmentShader, /texture2D\(uSkyTexture/, 'le fond normal est projeté par le GPU depuis la texture');
   assert.match(window.__eveMapTest.skyGpuFragmentShader, /nearStarLayer/, 'une couche d’étoiles proches reste calculée dans le même shader GPU');
   assert.doesNotMatch(window.__eveMapTest.skyGpuFragmentShader, /proceduralNebulaPacked/, 'le chemin GPU ne réintroduit pas de raster procédural CPU');
-  const skyAsset = fs.readFileSync(path.join(__dirname, 'data/sky/new-eden-sky-equirect-v2.png'));
-  assert.equal(skyAsset.readUInt32BE(16), skyAsset.readUInt32BE(20) * 2, 'la texture utilisée reste un panorama equirectangulaire 2:1');
+  const skyAsset = fs.readFileSync(path.join(__dirname, 'data/sky/new-eden-sky-milky-way-4096.webp'));
+  assert.equal(skyAsset.toString('ascii', 0, 4), 'RIFF', 'la texture de ciel optimisée est un fichier WebP valide');
+  assert.equal(skyAsset.toString('ascii', 8, 12), 'WEBP', 'la texture de ciel reste adaptée au décodage Chromium/WebView2');
+  assert.match(window.__eveMapTest.skyGpuFragmentShader, /nebulaDensity/, 'les voiles gazeux reposent sur un champ de nuages GPU, sans boucle CPU de fond');
+  assert.doesNotMatch(window.__eveMapTest.skyGpuFragmentShader, /gasRibbon/, 'le gaz ne redevient pas un motif périodique en rubans');
+  assert.match(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), /SKY_GPU_MOVING_SCALE = \.72/, 'le fond réduit explicitement sa résolution pendant le mouvement caméra');
   const packedTexture = window.__eveMapTest.skyTexturePacked({ width: 2, height: 2, pixels: new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]) }, 1, 0, 0);
   assert.equal(packedTexture, (10 << 16) | (11 << 8) | 12, 'la texture equirectangulaire est échantillonnée depuis la direction céleste calculée');
   const band = window.__eveMapTest.nebulaColor(1, 0, 0), pole = window.__eveMapTest.nebulaColor(0, 1, 0);

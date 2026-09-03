@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 38056)
-Total output lines: 2695
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -374,11 +371,11 @@ Total output lines: 2695
             <path d="M20 12h4v4" fill="none" stroke="#22c55e" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
           </svg>
         </div>
-        <div><h1>EVE <span>Market Manager</span></h1><div class="sub">Trading Dashboard for New Eden &middot; The Forge &middot; v0.1.1</div></div>
+        <div><h1>EVE <span>Market Manager</span></h1><div class="sub">Trading Dashboard for New Eden &middot; The Forge &middot; v0.1.6</div></div>
       </div>
       <div class="chars" id="chars"></div>
       <button class="btn small" id="import-btn" onclick="importEve()" title="Importe un export EVE 'Export your market orders' pour le perso sélectionné">Import</button>
-      <button class="btn small eve-map-launch" onclick="openEveMap()" title="Offline interactive map of New Eden">New Eden</button>
+      <button class="btn small eve-map-launch" onclick="MapWorkspace.show()" title="Open the New Eden workspace">New Eden</button>
       <div class="sso-wrapper">
         <button class="btn small" id="sso-btn" onclick="toggleSsoPin(event)" style="display:none">Connect EVE</button>
         <div class="sso-popover" id="sso-popover">
@@ -445,6 +442,7 @@ Total output lines: 2695
       <div class="tab" data-workspace="assets" onclick="TradingUI.show('assets')">Assets <span class="c" id="tab-assets-c">0</span></div>
       <div class="tab" data-workspace="transactions" onclick="TradingUI.show('transactions')">Transactions <span class="c" id="tab-transactions-c">0</span></div>
       <div class="tab" data-workspace="alerts" onclick="TradingUI.show('alerts')">Alerts <span class="c" id="tab-alerts-c">0</span></div>
+      <div class="tab" data-workspace="map" onclick="MapWorkspace.show()">New Eden</div>
     </div>
 
     <div class="grid-wrap" id="orders-grid">
@@ -460,6 +458,12 @@ Total output lines: 2695
     </div>
 
     <div class="trade-view" id="trade-view" hidden aria-live="polite"></div>
+
+    <section id="eve-map-workspace" class="eve-map-workspace" hidden aria-label="New Eden map">
+      <header class="eve-map-header"><div><div class="eve-map-kicker">OFFLINE NAVIGATION</div><h2 id="eve-map-title">New Eden</h2></div></header>
+      <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><span class="eve-live-divider">LIVE DATA</span><label title="Public ESI traffic distributed across gates as an estimate"><input type="checkbox" id="eve-map-traffic"> Traffic flow</label><label><input type="checkbox" id="eve-map-danger"> Danger</label><span class="eve-live-divider">INFLUENCE</span><label><input type="checkbox" id="eve-map-sovereignty"> Player Sov</label><small id="eve-map-sovereignty-state" class="eve-map-overlay-state">off</small><label><input type="checkbox" id="eve-map-empires"> Empires &amp; NPC</label><select id="eve-map-character" aria-label="Active character"><option value="">All pilots</option></select><button class="btn mini" id="eve-map-fit">Home · New Eden</button><button class="btn mini" id="eve-map-reset-camera" type="button" title="Restore the default New Eden view">Reset camera</button></div>
+      <main class="eve-map-content"><div id="eve-map-canvas" class="eve-map-canvas"><div class="eve-map-status">Map ready to load.</div></div><aside id="eve-map-panel" class="eve-map-panel"><div class="eve-map-empty">Select a system.</div><div class="eve-map-route"><input id="eve-route-from" placeholder="From (ID or system)"><input id="eve-route-to" placeholder="To (ID or system)"><button class="btn mini" id="eve-map-route">Route</button><div id="eve-route-result"></div></div></aside></main>
+    </section>
 
     <div class="bottom">
       <div class="status" id="status">
@@ -959,11 +963,10 @@ Total output lines: 2695
     refreshSsoChips(window.__ssoChars);
     updateDynamicMetrics();
     renderTable();
-    const mapIsOpen = document.getElementById('eve-map-overlay')?.getAttribute('aria-hidden') === 'false';
-    if (mapIsOpen && window.__selChar != null) {
-      void window.focusEveMapCharacter?.(window.__selChar);
-    } else if (mapIsOpen) {
-      window.clearEveMapCharacterSelection?.();
+    if (window.__state.workspace === 'map' && window.__selChar != null) {
+      void window.MapWorkspace?.focusCharacter?.(window.__selChar);
+    } else if (window.__state.workspace === 'map') {
+      window.MapWorkspace?.clearCharacterFocus?.();
     }
   }
 
@@ -1978,10 +1981,10 @@ Total output lines: 2695
       if (guideX) guideX.style.display = 'none';
     };
   }
-  function checkFirstRun() {
+  async function checkFirstRun() {
     const a = getApi(); if (!a || !a.firstrun_status) return;
     let st;
-    try { st = a.firstrun_status(); } catch (e) { return; }
+    try { st = await a.firstrun_status(); } catch (e) { return; }
     if (st && st.configured) return;
     showFirstRun();
   }
@@ -1993,17 +1996,21 @@ Total output lines: 2695
     const ov = document.getElementById('firstrun-overlay');
     if (ov) ov.style.display = 'none';
   }
-  function submitFirstRun() {
+  async function submitFirstRun() {
     const a = getApi(); if (!a || !a.save_firstrun_config) return;
     const cid = document.getElementById('fr-cid').value.trim();
     const sec = document.getElementById('fr-sec').value.trim();
     if (!cid || !sec) { document.getElementById('fr-msg').textContent = 'CLIENT_ID et CLIENT_SECRET requis.'; return; }
-    const r = a.save_firstrun_config(JSON.stringify({ client_id: cid, client_secret: sec }));
-    if (r && r.ok) {
-      closeFirstRun();
-      connectEve(); // declenche le consent CCP -> peuplage de l'app
-    } else {
-      document.getElementById('fr-msg').textContent = (r && r.error) ? r.error : 'Echec de la sauvegarde.';
+    try {
+      const r = await a.save_firstrun_config(JSON.stringify({ client_id: cid, client_secret: sec }));
+      if (r && r.ok) {
+        closeFirstRun();
+        connectEve(); // declenche le consent CCP -> peuplage de l'app
+      } else {
+        document.getElementById('fr-msg').textContent = (r && r.error) ? r.error : 'Echec de la sauvegarde.';
+      }
+    } catch (e) {
+      document.getElementById('fr-msg').textContent = 'Echec de la sauvegarde.';
     }
   }
 
@@ -2123,17 +2130,8 @@ Total output lines: 2695
   </div>
 </div>
 
-<div id="eve-map-overlay" class="eve-map-overlay" aria-hidden="true">
-  <section class="eve-map-dialog" role="dialog" aria-modal="true" aria-labelledby="eve-map-title">
-    <header class="eve-map-header"><div><div class="eve-map-kicker">OFFLINE NAVIGATION</div><h2 id="eve-map-title">New Eden</h2></div><button class="modal-x" onclick="closeEveMap()" aria-label="Close map">&times;</button></header>
-    <div class="eve-map-toolbar"><input id="eve-map-search" type="search" placeholder="Search a system…" autocomplete="off"><div id="eve-map-results" class="eve-map-results"></div><label><input type="checkbox" data-eve-security="high" checked> High</label><label><input type="checkbox" data-eve-security="low" checked> Low</label><label><input type="checkbox" data-eve-security="null" checked> Null</label><label><input type="checkbox" id="eve-map-gates" checked> Gates</label><span class="eve-live-divider">LIVE DATA</span><label title="Public ESI traffic distributed across gates as an estimate"><input type="checkbox" id="eve-map-traffic"> Traffic flow</label><label><input type="checkbox" id="eve-map-danger"> Danger</label><span class="eve-live-divider">INFLUENCE</span><label><input type="checkbox" id="eve-map-sovereignty"> Player Sov</label><small id="eve-map-sovereignty-state" class="eve-map-overlay-state">off</small><label><input type="checkbox" id="eve-map-empires"> Empires &amp; NPC</label><select id="eve-map-character" aria-label="Active character"><option value="">All pilots</option></select><button class="btn mini" id="eve-map-fit">Home · New Eden</button><button class="btn mini" id="eve-map-reset-camera" title="Restore the default New Eden view">Reset camera</button></div>
-    <main class="eve-map-content"><div id="eve-map-canvas" class="eve-map-canvas"><div class="eve-map-status">Loading topology…</div></div><aside id="eve-map-panel" class="eve-map-panel"><div class="eve-map-empty">Select a system.</div><div class="eve-map-route"><input id="eve-route-from" placeholder="From (ID or system)"><input id="eve-route-to" placeholder="To (ID or system)"><button class="btn mini" id="eve-map-route">Route</button><div id="eve-route-result"></div></div></aside></main>
-  </section>
-</div>
-
 <link rel="stylesheet" href="eve_map.css">
 <script src="trading-ui.js"></script>
-<script src="vendor/3d-force-graph.min.js"></script>
-<script src="eve_map.js"></script>
+<script src="map-workspace.js"></script>
 </body>
 </html>

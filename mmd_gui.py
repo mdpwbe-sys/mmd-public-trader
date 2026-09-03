@@ -282,6 +282,23 @@ class Api:
         except Exception as exc:
             return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
 
+    def get_eve_map_combat_markers(self):
+        """Return the bounded global R2Z2 feed used by the visible map only."""
+        try:
+            import eve_map_kill_stream
+            return eve_map_kill_stream.get_recent_markers()
+        except Exception as exc:
+            return {"ok": False, "markers": [], "state": "unavailable", "error": str(exc)}
+
+    def set_eve_map_combat_stream_active(self, active):
+        """Avoid consuming the global zKillboard stream while the map is closed."""
+        try:
+            import eve_map_kill_stream
+            eve_map_kill_stream.set_active(bool(active))
+            return {"ok": True}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
     def get_eve_map_kill_attackers(self, system_id, killmail_id):
         """Lazy attacker detail for one already-cached zKill entry."""
         try:

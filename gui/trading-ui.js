@@ -66,18 +66,20 @@
       kpi('Escrow achats', s.buy_escrow_cents) + kpi('P&L réalisé', s.realized_pnl_cents) + kpi('P&L latent', s.unrealized_pnl_cents) +
       percentKpi('Rendement réalisé 30j', s.monthly_return_bp) +
       `<div class="trade-kpi"><div class="k">Jours actifs</div><div class="v">${fmtQty(s.days_running)}</div></div>` +
-      `<div class="trade-kpi"><div class="k">Alertes</div><div class="v">${fmtQty((data.alerts || []).length)}</div></div>`;
+      `<div class="trade-kpi"><div class="k">Alertes</div><div class="v">${fmtQty(data.complete ? (data.alerts || []).length : null)}</div></div>`;
     return shell('Dashboard', `<div class="trade-kpis">${cards}</div><div class="trade-insights">${insight('Meilleure position', winner)}${insight('Position à surveiller', loser)}</div>`);
   }
   function assets(data) {
     const selectedPath = data.asset_source && (Array.isArray(data.asset_source.path) ? data.asset_source.path.join(' / ') : data.asset_source.name);
+    const marketRef = row => row.market_source === 'cost_fallback' ? 'Coût (marché indisponible)' : row.market_source === 'forge_fallback' ? `The Forge fallback · ${row.valuation_region_id}` : row.market_source === 'regional_history' ? `Région ${row.valuation_region_id}` : 'Indisponible';
     const columns = [
       { label: 'Item', render: r => textCell(assetName(r), 'item') },
       { label: 'Qté', num: true, render: r => `<td class="num">${fmtQty(pick(r, ['quantity', 'qty'], null))}</td>` },
-      { label: 'Conteneur', render: r => textCell(pick(r, ['container_path', 'container_name'], selectedPath || '–')) },
+      { label: 'Conteneur', render: r => textCell(pick(r, ['container_path', 'container_name'], integer(r.asset_qty) > 0n ? selectedPath : 'Hors conteneur')) },
       { label: 'Source', render: r => textCell(pick(r, ['acquisition_source', 'source'], '–')) },
       { label: 'Coût FIFO', num: true, render: r => moneyCell(pick(r, ['fifo_unit_cost_cents', 'unit_cost_cents', 'avg_cost_cents'], null)) },
-      { label: 'Marché', num: true, render: r => moneyCell(pick(r, ['market_unit_cents', 'market_price_cents', 'valuation_price_cents', 'market_median_cents'], null)) },
+      { label: 'Prix de valorisation', num: true, render: r => moneyCell(pick(r, ['market_unit_cents', 'market_price_cents', 'valuation_price_cents', 'market_median_cents'], null)) },
+      { label: 'Référence', render: r => textCell(marketRef(r)) },
       { label: 'Valeur', num: true, render: r => moneyCell(r.inventory_value_cents) },
       { label: 'P&L latent', num: true, render: r => moneyCell(pick(r, ['unrealized_pnl_cents', 'latent_pnl_cents'], null)) },
       { label: 'Profit projeté', num: true, render: r => moneyCell(r.projected_profit_cents) },
@@ -86,7 +88,7 @@
       { label: 'Liquidité', num: true, render: r => `<td class="num">${fmtQty(pick(r, ['liquidity_volume_30d', 'volume_30d', 'daily_volume'], null))}</td>` },
       { label: 'État', render: r => textCell(pick(r, ['listing_state', 'status', 'action'], '–')) }
     ];
-    return shell('Assets', table(data.assets, columns, 'Aucun asset dans ce conteneur.'), '<select id="trade-container-filter" class="trade-select" aria-label="Conteneur d’assets"></select>');
+    return shell('Assets', table(data.assets, columns, data.complete ? 'Aucun asset dans ce conteneur.' : 'Assets indisponibles ou synchronisation incomplète.'), '<select id="trade-container-filter" class="trade-select" aria-label="Conteneur d’assets"></select>');
   }
   function transactions(data) {
     const columns = [
@@ -103,7 +105,7 @@
       { label: 'Owner', render: r => textCell(pick(r, ['owner_name', 'owner'], '–')) },
       { label: 'Station', render: r => textCell(pick(r, ['station_name', 'station'], '–')) }
     ];
-    return shell('Transactions', table(data.transactions, columns, 'Aucune transaction pour cette source.'));
+    return shell('Transactions', table(data.transactions, columns, data.complete ? 'Aucune transaction pour cette source.' : 'Transactions jamais synchronisées ou temporairement indisponibles.'));
   }
   function alertTone(row) {
     const level = String(pick(row, ['severity', 'level'], '')).toLowerCase();
@@ -114,12 +116,12 @@
     const cards = rows.length ? `<div class="trade-alerts">${rows.map(row => { const cls = alertTone(row); return `<article class="trade-alert ${cls}">` +
       `<div class="trade-alert-head"><span class="trade-chip ${cls}">${esc(pick(row, ['severity', 'level'], 'Info'))}</span><span class="trade-chip ${cls}">${esc(pick(row, ['action'], 'Voir'))}</span></div>` +
       `<div class="trade-alert-name">${esc(assetName(row))}</div><div class="trade-alert-message">${esc(pick(row, ['message', 'reason'], 'Aucun détail'))}</div>` +
-      `<div class="trade-alert-impact ${tone(pick(row, ['impact_cents', 'value_cents'], null))}">Impact : ${fmtCents(pick(row, ['impact_cents', 'value_cents'], null))}</div></article>`; }).join('')}</div>` : '<div class="trade-empty">Aucune alerte active.</div>';
+      `<div class="trade-alert-impact ${tone(pick(row, ['impact_cents', 'value_cents'], null))}">Impact : ${fmtCents(pick(row, ['impact_cents', 'value_cents'], null))}</div></article>`; }).join('')}</div>` : `<div class="trade-empty">${data.complete ? 'Aucune alerte active.' : 'Alertes incomplètes tant que les sources ne sont pas synchronisées.'}</div>`;
     return shell('Alerts', cards);
   }
 
   function updateCounts(data) {
-    [['tab-assets-c', data.assets], ['tab-transactions-c', data.transactions], ['tab-alerts-c', data.alerts]].forEach(([id, rows]) => { const node = el(id); if (node) node.textContent = Array.isArray(rows) ? rows.length : 0; });
+    [['tab-assets-c', data.assets, 'assets'], ['tab-transactions-c', data.transactions, 'transactions'], ['tab-alerts-c', data.alerts, null]].forEach(([id, rows, source]) => { const node = el(id), known = data.complete || (source && data.availability && data.availability[source] && data.availability[source].available); if (node) node.textContent = known && Array.isArray(rows) ? rows.length : '–'; });
   }
   function render() {
     const root = el('trade-view'); if (!root || window.__state.workspace === 'orders') return;
@@ -131,8 +133,10 @@
   }
   function layout(view) {
     const orders = view === 'orders'; window.__state.workspace = view;
-    const metrics = el('orders-metrics'), grid = el('orders-grid'), trade = el('trade-view');
+    const metrics = el('orders-metrics'), grid = el('orders-grid'), trade = el('trade-view'), map = el('eve-map-workspace');
     if (metrics) metrics.hidden = !orders; if (grid) grid.hidden = !orders; if (trade) trade.hidden = orders;
+    if (map) map.hidden = true;
+    window.closeEveMap?.();
     document.querySelectorAll('#tabs .tab').forEach(tab => tab.classList.toggle('active', orders ? tab.dataset.tab === window.__state.tab : tab.dataset.workspace === view));
   }
   function show(view) { if (!VALID_VIEWS.has(view)) return false; layout(view); window.__state.selIndex = -1; render(); if (!T.settings) fetchSettings(false).then(render); if (!T.workspace || !T.workspace.ok) loadWorkspace(false); return true; }
@@ -151,7 +155,7 @@
   }
   async function fetchSettings(force) {
     if (T.settings && !force) return T.settings; const request = ++T.settingsRequest;
-    try { const data = await call('get_trade_settings'); if (request !== T.settingsRequest) return T.settings; T.settings = data || { ok: false, error: 'Réponse settings vide.' }; if (T.settings.ok && !T.containerKey) T.containerKey = selectedKey(T.settings.containers, T.settings.asset_source, ['character_id', 'item_id']); return T.settings; }
+    try { const data = await call('get_trade_settings', !!force); if (request !== T.settingsRequest) return T.settings; T.settings = data || { ok: false, error: 'Réponse settings vide.' }; if (T.settings.ok && !T.containerKey) T.containerKey = selectedKey(T.settings.containers, T.settings.asset_source, ['character_id', 'item_id']); return T.settings; }
     catch (error) { if (request === T.settingsRequest) T.settings = { ok: false, error: String(error) }; return T.settings; }
   }
   function selectedKey(items, source, fields) {
@@ -188,9 +192,9 @@
     if (!divisionSelect || !containerSelect || !divisionSelect.value || !T.settings) return false;
     const division = (T.settings.divisions || []).find(row => String(row.key) === String(divisionSelect.value)); const container = (T.settings.containers || []).find(row => String(row.key) === String(containerSelect.value)); if (!division || (containerSelect.value && !container)) return false;
     const payload = { wallet_source: { key: String(division.key), corporation_id: asId(division.corporation_id), division_id: asId(division.division_id) }, asset_source: container ? { key: String(container.key), character_id: asId(container.character_id), item_id: asId(container.item_id) } : null };
-    save.disabled = true; status.textContent = 'Sauvegarde…';
+    save.disabled = divisionSelect.disabled = containerSelect.disabled = true; status.textContent = 'Sauvegarde…';
     try { const result = await call('save_trade_settings', payload); if (result === undefined || (result && result.ok === false)) throw new Error((result && result.error) || 'Sauvegarde indisponible'); T.settings.wallet_source = payload.wallet_source; T.settings.asset_source = payload.asset_source; T.containerKey = payload.asset_source ? payload.asset_source.key : ''; status.textContent = 'Sources sauvegardées.'; await loadWorkspace(false); return true; }
-    catch (error) { status.textContent = `Erreur : ${String(error)}`; return false; } finally { save.disabled = false; }
+    catch (error) { status.textContent = `Erreur : ${String(error)}`; return false; } finally { save.disabled = divisionSelect.disabled = false; containerSelect.disabled = !(T.settings.containers || []).length; }
   }
   async function init() { if (T.initialized) return; T.initialized = true; showOrders(); }
 

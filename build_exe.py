@@ -27,6 +27,10 @@ PyInstaller.__main__.run([
     "--hidden-import=webview",
     "--hidden-import=mmd_core",
     "--hidden-import=eve_map_service",
+    # Loaded lazily by the map API once optional live overlays are requested.
+    # Keep it explicit: onefile analysis cannot see that dynamic import.
+    "--hidden-import=eve_map_intel_service",
+    "--hidden-import=eve_map_kill_stream",
     "--hidden-import=mmd_sso",
     "--hidden-import=mmd_margin",
     "--hidden-import=mmd_stations",

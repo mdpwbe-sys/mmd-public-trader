@@ -4,6 +4,16 @@ Tous les changements notables sont documentés ici. Le format suit les
 principes de [Keep a Changelog](https://keepachangelog.com/), le versionnage
 est en [SemVer](https://semver.org/).
 
+## [0.1.6] — 2026-09-03
+
+### Ajouté
+- **Combat map live** : le flux R2Z2 zKillboard est consommé uniquement lorsque la carte est ouverte. Les killmails datés de moins de cinq minutes deviennent des marqueurs temporaires sur leur système ; le flux est borné, dédoublonné et utilise un backoff respectueux.
+- **Ciel 4K optimisé** : panorama WebP équirectangulaire, coquille d'étoiles proches et nappes de gaz à champ de densité stable. Le rendu réduit temporairement sa résolution pendant l'orbite, puis revient à sa qualité maximale à l'arrêt.
+
+### Corrigé
+- L’assistant de premier lancement attend désormais les réponses asynchrones du pont pywebview : une configuration existante ne réapparaît plus et l’enregistrement peut réellement déclencher la connexion EVE.
+- L’exécutable embarque explicitement les modules d’intel carte chargés dynamiquement.
+
 ## [0.1.4] — 2026-09-03
 
 ### Ajouté

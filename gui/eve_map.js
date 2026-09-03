@@ -1,6 +1,6 @@
 /* Offline New Eden graph.  Positions are fixed from CCP's physical coordinates. */
 (function () {
-  const state = { graph: null, data: null, nodesById: null, gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyField: null, skyImage: null, skyRays: null, skyTexture: null, skyTextureLoading: false, skyStars: [], skyFrameKey: null, skyLastPaintAt: 0, skyInteracting: false, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, killHoverKey: null, killPopover: null, characters: [], characterTrackingTimer: null, live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
+  const state = { graph: null, data: null, nodesById: null, renderNodes: [], trafficBySystem: new Map(), gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyField: null, skyImage: null, skyRays: null, skyTexture: null, skyTextureLoading: false, skyStars: [], skyFrameKey: null, skyLastPaintAt: 0, skyInteracting: false, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, killHoverKey: null, killPopover: null, characters: [], characterTrackingTimer: null, combatMarkerTimer: null, combatMarkers: new Map(), live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
   const byId = () => new Map((state.data && state.data.systems || []).map(s => [s.id, s]));
   const api = () => window.pywebview && window.pywebview.api || window.api;
   const mapWorkspace = () => document.getElementById('eve-map-workspace') || document.getElementById('eve-map-overlay');
@@ -8,6 +8,7 @@
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const CHARACTER_COLORS = ['#66e7f5', '#ffca62', '#e978b1', '#aa8cff', '#7ee6a9', '#ff956e'];
   const CHARACTER_POSITION_POLL_MS = 15_000;
+  const COMBAT_MARKER_TTL_MS = 5 * 60 * 1000;
   const characterPositionTrackingInterval = visible => visible ? CHARACTER_POSITION_POLL_MS : null;
   const characterColorInfo = character => {
     const dashboardColor = window.getCharColorInfo?.(character?.name);
@@ -54,11 +55,15 @@
   // into accidental depth movement.
   const NEW_EDEN_MIN_POLAR_ANGLE = .12;
   const NEW_EDEN_MAX_POLAR_ANGLE = .56;
-  const SKY_TEXTURE_URL = 'data/sky/new-eden-sky-equirect-v2.png';
+  // The ESO panorama is already equirectangular.  WebP keeps the 4K source
+  // crisp while avoiding the 72+ MiB decoded cost of the original 6000x3000 TIFF.
+  const SKY_TEXTURE_URL = 'data/sky/new-eden-sky-milky-way-4096.webp';
   const SKY_MOVING_FRAME_MS = 110;
   const SKY_SETTLED_FRAME_MS = 72;
   const SKY_TAU = Math.PI * 2;
-  const SKY_GPU_MAX_DPR = 1.35;
+  const SKY_GPU_MAX_DPR = 1;
+  const SKY_GPU_MOVING_SCALE = .72;
+  const SKY_GPU_SETTLED_SCALE = 1;
   const SKY_GPU_VERTEX_SHADER = `
     attribute vec2 aPosition;
     varying vec2 vUv;
@@ -73,6 +78,7 @@
     uniform mat2 uWorldToSky;
     uniform vec2 uInverseFocal;
     uniform sampler2D uSkyTexture;
+    uniform float uSkyDebugMode;
     varying vec2 vUv;
     const float PI = 3.141592653589793;
     // One deterministic candidate per cube-face cell.  This keeps the nearby
@@ -116,6 +122,34 @@
       vec3 tint = mix(vec3(.52, .70, 1.0), vec3(1.0, .69, .44), warm);
       return tint * exists * (core + wing * .055) * luminosity;
     }
+    // Stable direction -> broad warped cloud mass -> density and colour.
+    // This deliberately avoids periodic longitude bands: the panorama owns the
+    // distant detail while this field only adds a few natural-looking gas veils.
+    float hash31(vec3 point) {
+      point = fract(point * .1031);
+      point += dot(point, point.yzx + 33.33);
+      return fract((point.x + point.y) * point.z);
+    }
+    float valueNoise3(vec3 point) {
+      vec3 cell = floor(point), local = fract(point);
+      local = local * local * (3.0 - 2.0 * local);
+      float a = hash31(cell + vec3(0., 0., 0.)), b = hash31(cell + vec3(1., 0., 0.));
+      float c = hash31(cell + vec3(0., 1., 0.)), d = hash31(cell + vec3(1., 1., 0.));
+      float e = hash31(cell + vec3(0., 0., 1.)), f = hash31(cell + vec3(1., 0., 1.));
+      float g = hash31(cell + vec3(0., 1., 1.)), h = hash31(cell + vec3(1., 1., 1.));
+      return mix(mix(mix(a, b, local.x), mix(c, d, local.x), local.y), mix(mix(e, f, local.x), mix(g, h, local.x), local.y), local.z);
+    }
+    vec3 nebulaDirection(vec3 direction) {
+      vec3 warp = vec3(valueNoise3(direction * 1.13 + vec3(13.7, 2.1, 7.9)), valueNoise3(direction * 1.13 + vec3(3.4, 19.2, 11.6)), valueNoise3(direction * 1.13 + vec3(8.1, 6.3, 23.4))) - .5;
+      return normalize(direction + warp * .26);
+    }
+    float nebulaDensity(vec3 direction) {
+      vec3 warped = nebulaDirection(direction);
+      float macro = valueNoise3(warped * 1.62 + vec3(4.7, 9.1, 2.5));
+      float meso = valueNoise3(warped * 4.20 + vec3(12.6, 3.8, 16.2));
+      float galacticSheet = 1.0 - smoothstep(.18, .56, abs(dot(warped, normalize(vec3(.18, .91, -.37)))));
+      return galacticSheet * smoothstep(.58, .78, macro * .68 + meso * .32);
+    }
     void main() {
       vec2 ndc = vUv * 2.0 - 1.0;
       vec3 viewDirection = normalize(vec3(ndc.x * uInverseFocal.x, ndc.y * uInverseFocal.y, -1.0));
@@ -125,13 +159,23 @@
       float longitude = .5 + atan(skyDirection.z, skyDirection.x) / (2.0 * PI);
       float latitude = .5 - asin(clamp(skyDirection.y, -1.0, 1.0)) / PI;
       vec3 distantSky = texture2D(uSkyTexture, vec2(fract(longitude), clamp(latitude, 0.0, 1.0))).rgb;
+      distantSky = pow(max(distantSky, vec3(0.0)), vec3(1.16)) * .70;
+      float darkSpace = 1.0 - smoothstep(.16, .72, max(distantSky.r, max(distantSky.g, distantSky.b)));
+      vec3 warpedNebulaDirection = nebulaDirection(skyDirection);
+      float nebula = nebulaDensity(skyDirection);
+      float warmPocket = smoothstep(.52, .82, valueNoise3(warpedNebulaDirection * 2.15 + vec3(3.1, 14.7, 8.5))) * nebula;
+      vec3 gasNebula = vec3(.018, .078, .145) * nebula;
+      gasNebula += vec3(.095, .020, .062) * warmPocket;
       // Two sparse layers create nearby, crisp depth cues while the panorama
-      // continues to own the distant Milky-Way and nebula detail.
+      // owns the distant Milky-Way detail and the ribbons stay a light accent.
       float nearFace;
       vec2 nearFaceUv = cubeFaceUv(skyDirection, nearFace);
-      vec3 nearbyStars = nearStarLayer(nearFaceUv, nearFace, 164.0, .030, .125, 3.0);
-      nearbyStars += nearStarLayer(nearFaceUv, nearFace, 72.0, .018, .15, 31.0);
-      gl_FragColor = vec4(distantSky + nearbyStars * .72, 1.0);
+      vec3 nearbyStars = nearStarLayer(nearFaceUv, nearFace, 164.0, .048, .125, 3.0);
+      nearbyStars += nearStarLayer(nearFaceUv, nearFace, 72.0, .025, .15, 31.0);
+      nearbyStars += nearStarLayer(nearFaceUv, nearFace, 36.0, .007, .19, 67.0);
+      if (uSkyDebugMode > 1.5) { gl_FragColor = vec4(nearbyStars * 1.8, 1.0); return; }
+      if (uSkyDebugMode > .5) { gl_FragColor = vec4(vec3(nebula), 1.0); return; }
+      gl_FragColor = vec4(distantSky + gasNebula * (.20 + darkSpace * .46) + nearbyStars * .68, 1.0);
     }
   `;
   const rotateSkyYaw = (direction, angle) => {
@@ -448,9 +492,36 @@
     try {
       const response = await api().get_eve_map_live_intel();
       state.live = { systems: response.systems || {}, state: response.state || (response.ok ? 'live' : 'unavailable'), updated_at: response.updated_at || null, age_seconds: response.age_seconds };
+      state.trafficBySystem = new Map(Object.entries(state.live.systems).map(([id, values]) => [Number(id), Number(values.ship_jumps) || 0]));
     } catch (_) { state.live = { systems: {}, state: 'unavailable', updated_at: null }; }
     render();
     if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId), { loadDetails: false });
+  }
+  async function loadCombatMarkers() {
+    if (!api()?.get_eve_map_combat_markers) return;
+    try {
+      const response = await api().get_eve_map_combat_markers();
+      const now = Date.now();
+      (response.markers || []).forEach(marker => {
+        const happenedAt = Number(marker.happened_at) * 1000;
+        if (!Number.isFinite(happenedAt) || now - happenedAt > COMBAT_MARKER_TTL_MS) return;
+        state.combatMarkers.set(`zkb:${marker.killmail_id}`, { ...marker, happenedAt, expiresAt: happenedAt + COMBAT_MARKER_TTL_MS });
+      });
+    } catch (_) { /* The static map remains fully usable when R2Z2 is offline. */ }
+  }
+  function startCombatStream() {
+    const bridge = api();
+    // Keep the renderer independently testable and compatible with an older
+    // backend: combat is optional, the topology never is.
+    if (!bridge?.get_eve_map_combat_markers || !bridge?.set_eve_map_combat_stream_active) return;
+    bridge.set_eve_map_combat_stream_active(true);
+    loadCombatMarkers();
+    if (state.combatMarkerTimer == null) state.combatMarkerTimer = setInterval(loadCombatMarkers, 10_000);
+  }
+  function stopCombatStream() {
+    if (state.combatMarkerTimer != null) clearInterval(state.combatMarkerTimer);
+    state.combatMarkerTimer = null;
+    api()?.set_eve_map_combat_stream_active?.(false);
   }
   async function loadSovereignty() {
     const indicator = document.getElementById('eve-map-sovereignty-state');
@@ -607,7 +678,7 @@
     const program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { gl.deleteProgram(program); return null; }
     const position = gl.getAttribLocation(program, 'aPosition');
-    const locations = { cameraRotation: gl.getUniformLocation(program, 'uCameraRotation'), worldToSky: gl.getUniformLocation(program, 'uWorldToSky'), inverseFocal: gl.getUniformLocation(program, 'uInverseFocal'), texture: gl.getUniformLocation(program, 'uSkyTexture') };
+    const locations = { cameraRotation: gl.getUniformLocation(program, 'uCameraRotation'), worldToSky: gl.getUniformLocation(program, 'uWorldToSky'), inverseFocal: gl.getUniformLocation(program, 'uInverseFocal'), texture: gl.getUniformLocation(program, 'uSkyTexture'), debugMode: gl.getUniformLocation(program, 'uSkyDebugMode') };
     if (position < 0 || Object.values(locations).some(location => location == null)) { gl.deleteProgram(program); return null; }
     const buffer = gl.createBuffer(), texture = gl.createTexture();
     if (!buffer || !texture) { gl.deleteProgram(program); return null; }
@@ -778,11 +849,13 @@
     const world = camera.matrixWorld?.elements, projection = camera.projectionMatrix?.elements;
     if (!world || !projection) return;
     const { canvas, gl, program, position, locations, texture, cameraRotation, worldToSky } = renderer;
-    const pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+    const qualityScale = state.skyInteracting ? SKY_GPU_MOVING_SCALE : SKY_GPU_SETTLED_SCALE;
+    const pixelWidth = Math.max(1, Math.round(width * dpr * qualityScale)), pixelHeight = Math.max(1, Math.round(height * dpr * qualityScale));
     if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) { canvas.width = pixelWidth; canvas.height = pixelHeight; canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; }
     cameraRotation[0] = world[0]; cameraRotation[1] = world[1]; cameraRotation[2] = world[2]; cameraRotation[3] = world[4]; cameraRotation[4] = world[5]; cameraRotation[5] = world[6]; cameraRotation[6] = world[8]; cameraRotation[7] = world[9]; cameraRotation[8] = world[10];
     gl.viewport(0, 0, pixelWidth, pixelHeight); gl.useProgram(program); gl.bindBuffer(gl.ARRAY_BUFFER, renderer.buffer); gl.enableVertexAttribArray(position); gl.vertexAttribPointer(position, 2, gl.FLOAT, false, 0, 0); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.uniformMatrix3fv(locations.cameraRotation, false, cameraRotation); gl.uniformMatrix2fv(locations.worldToSky, false, worldToSky); gl.uniform2f(locations.inverseFocal, 1 / Math.max(.001, projection[0]), 1 / Math.max(.001, projection[5]));
+    const debugMode = window.__eveMapSkyDebug === 'gas' ? 1 : window.__eveMapSkyDebug === 'stars' ? 2 : 0;
+    gl.uniformMatrix3fv(locations.cameraRotation, false, cameraRotation); gl.uniformMatrix2fv(locations.worldToSky, false, worldToSky); gl.uniform2f(locations.inverseFocal, 1 / Math.max(.001, projection[0]), 1 / Math.max(.001, projection[5])); gl.uniform1f(locations.debugMode, debugMode);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     state.skyFrameKey = frameKey; state.skyLastPaintAt = performance.now();
   }
@@ -906,6 +979,24 @@
     host.addEventListener('pointerup', () => { if (state.pointer?.moved) state.suppressNodeClickUntil = performance.now() + 180; }, true);
     host.addEventListener('click', event => { if (state.pointer?.moved) { event.stopImmediatePropagation(); state.pointer = null; return; } if (!state.hoverCandidate) return; event.stopImmediatePropagation(); selectCandidate(state.hoverCandidate); state.pointer = null; }, true);
     host.addEventListener('contextmenu', event => { if (!state.hoverCandidate || state.hoverCandidate.kind !== 'system' || state.pointer?.moved) return; event.preventDefault(); event.stopImmediatePropagation(); setEndpoint('origin', state.hoverCandidate.target); focus(state.hoverCandidate.target); }, true);
+  }
+  function drawCombatMarkers(context, camera, width, height, now = Date.now()) {
+    for (const [key, marker] of state.combatMarkers) {
+      if (!marker?.system_id || now >= marker.expiresAt) { state.combatMarkers.delete(key); continue; }
+      const node = state.nodesById.get(Number(marker.system_id));
+      if (!node || !visibleNode(node)) continue;
+      const point = projectVisible(node, camera, width, height);
+      if (!point) continue;
+      const life = Math.max(0, Math.min(1, (marker.expiresAt - now) / COMBAT_MARKER_TTL_MS));
+      const pulse = .5 + .5 * Math.sin(now / 310 + Number(marker.killmail_id || marker.system_id) % 31);
+      const radius = 8 + (1 - life) * 16;
+      context.beginPath(); context.arc(point.x, point.y, radius * (1 + pulse * .12), 0, Math.PI * 2);
+      context.strokeStyle = '#f0546e'; context.globalAlpha = (.22 + pulse * .25) * life;
+      context.lineWidth = 1.15 + pulse * .65; context.stroke();
+      context.beginPath(); context.arc(point.x, point.y, 2.3 + pulse * 1.7, 0, Math.PI * 2);
+      context.fillStyle = '#ffb090'; context.globalAlpha = (.42 + pulse * .28) * life; context.fill();
+    }
+    context.globalAlpha = 1;
   }
   function drawGateOverlay() {
     if (!state.visible || !state.graph || !state.linkCanvas) return;
@@ -1064,13 +1155,14 @@
       });
       context.globalAlpha = 1;
     }
+    drawCombatMarkers(context, camera, width, height);
     drawMapLabels(context, camera, width, height, nearestSystemDistance);
     state.linkFrame = requestAnimationFrame(drawGateOverlay);
   }
   function startGateOverlay(host, nodes) {
     stopGateOverlay();
     const canvas = document.createElement('canvas'); canvas.className = 'eve-map-links'; canvas.setAttribute('aria-hidden', 'true'); Object.assign(canvas.style, { position: 'absolute', inset: '0', zIndex: '2', pointerEvents: 'none' }); host.appendChild(canvas);
-    state.linkCanvas = canvas; state.nodesById = new Map(nodes.map(node => [node.id, node])); state.labelGroups = { regions: buildLabelGroups(nodes, 'region_id', 'region'), constellations: buildLabelGroups(nodes, 'constellation_id', 'constellation') }; state.linkFrame = requestAnimationFrame(drawGateOverlay);
+    state.linkCanvas = canvas; state.renderNodes = nodes; state.nodesById = new Map(nodes.map(node => [node.id, node])); state.labelGroups = { regions: buildLabelGroups(nodes, 'region_id', 'region'), constellations: buildLabelGroups(nodes, 'constellation_id', 'constellation') }; state.linkFrame = requestAnimationFrame(drawGateOverlay);
   }
   function focus(system) {
     if (!system || !state.graph) return;
@@ -1175,8 +1267,8 @@
     state.graph = graph; render(); startSkyMap(host); startGateOverlay(host, nodes); setTimeout(() => focusHome(), 80);
   }
   async function load() { if (state.graph) return; if (!window.ForceGraph3D) throw new Error('La dépendance 3D est indisponible.'); const response = await api().get_eve_map_data(); if (!response.ok) throw new Error(response.error || 'Carte indisponible'); initialize(response.data); }
-  window.openEveMap = async function () { const workspace = mapWorkspace(); if (!workspace) return; workspace.setAttribute('aria-hidden', 'false'); state.visible = true; try { await load(); state.resizeMap && state.resizeMap(); if (!state.linkFrame && state.linkCanvas) state.linkFrame = requestAnimationFrame(drawGateOverlay); startSkyFrame(); state.graph.resumeAnimation(); loadLiveIntel(); await loadCharacterPositions(); startCharacterPositionTracking(); } catch (error) { document.getElementById('eve-map-canvas').innerHTML = `<div class="eve-map-status">${escapeHtml(error.message)}</div>`; } };
-  window.closeEveMap = function () { const workspace = mapWorkspace(); workspace?.setAttribute('aria-hidden', 'true'); state.visible = false; stopCharacterPositionTracking(); stopGateOverlay(); stopSkyFrame(); state.graph && state.graph.pauseAnimation(); };
+  window.openEveMap = async function () { const workspace = mapWorkspace(); if (!workspace) return; workspace.setAttribute('aria-hidden', 'false'); state.visible = true; try { await load(); state.resizeMap && state.resizeMap(); if (!state.linkFrame && state.linkCanvas) state.linkFrame = requestAnimationFrame(drawGateOverlay); startSkyFrame(); state.graph.resumeAnimation(); loadLiveIntel(); startCombatStream(); await loadCharacterPositions(); startCharacterPositionTracking(); } catch (error) { document.getElementById('eve-map-canvas').innerHTML = `<div class="eve-map-status">${escapeHtml(error.message)}</div>`; } };
+  window.closeEveMap = function () { const workspace = mapWorkspace(); workspace?.setAttribute('aria-hidden', 'true'); state.visible = false; stopCharacterPositionTracking(); stopCombatStream(); stopGateOverlay(); stopSkyFrame(); state.graph && state.graph.pauseAnimation(); };
   window.setEveMapOrigin = id => setEndpoint('origin', id);
   window.setEveMapDestination = id => setEndpoint('destination', id);
   window.useEveMapSafeRoute = () => updateRoute(true);
