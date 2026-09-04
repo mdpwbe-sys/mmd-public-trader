@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from eve_map_service import EveMapService
-from eve_map_intel_service import EveMapIntelService
+from eve_map_intel_service import EveMapIntelService, default_cache_path
 from tools.build_eve_map import build_dataset
 
 
@@ -44,6 +44,21 @@ class EveMapBuilderTests(unittest.TestCase):
 
 
 class EveMapServiceTests(unittest.TestCase):
+    def test_raw_point_487_is_high_sec_and_allowed_by_a_high_sec_route(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "eve_map.json"
+            path.write_text(json.dumps({
+                "systems": [
+                    {"id": 1, "name": "Alpha", "security": 0.9, "position_m": {"x": 0, "y": 0, "z": 0}},
+                    {"id": 2, "name": "Borderline", "security": 0.487, "position_m": {"x": 1, "y": 0, "z": 0}},
+                ],
+                "gates": [{"source": 1, "target": 2}],
+            }), encoding="utf-8")
+            service = EveMapService(path)
+
+            self.assertEqual("high", service.security_class(0.487))
+            self.assertEqual([1, 2], service.find_route(1, 2, min_security="high")["systems"])
+
     def test_find_route_and_unknown_system_are_defensive(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "eve_map.json"
@@ -68,6 +83,10 @@ class EveMapServiceTests(unittest.TestCase):
 
 
 class EveMapIntelServiceTests(unittest.TestCase):
+    def test_default_map_intel_cache_uses_the_mmd_appdata_identity(self):
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"APPDATA": directory}):
+            self.assertEqual(Path(directory) / "MMD-Trader" / "cache" / "eve_map_intel.json", default_cache_path())
+
     def test_sovereignty_uses_current_public_transport_without_compatibility_header(self):
         class Response:
             def read(self):
@@ -170,6 +189,35 @@ class EveMapIntelServiceTests(unittest.TestCase):
             merged = service.get_recent_kills(30000142)
             self.assertEqual([42, 41], [kill["killmail_id"] for kill in merged["kills"]])
             self.assertEqual(612000000, merged["kills"][0]["value"])
+
+    def test_recent_area_kills_uses_one_cached_zkill_area_request(self):
+        class Response:
+            headers = {"Content-Encoding": ""}
+
+            def read(self):
+                return json.dumps([{
+                    "killmail_id": 84, "killmail_time": "1970-01-01T00:30:00Z", "solar_system_id": 30000142,
+                    "victim": {"ship_type_id": 670}, "attackers": [], "zkb": {"totalValue": 1234567},
+                }]).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        with tempfile.TemporaryDirectory() as directory:
+            service = EveMapIntelService(Path(directory) / "intel.json", now=lambda: 2_000)
+            with patch("eve_map_intel_service.urllib.request.urlopen", return_value=Response()) as fetch:
+                result = service.get_recent_area_kills("region", 10000002)
+                cached = service.get_recent_area_kills("region", 10000002)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([84], [kill["killmail_id"] for kill in result["kills"]])
+        self.assertEqual(1234567, result["kills"][0]["value"])
+        self.assertEqual("fresh", cached["state"])
+        self.assertEqual(1, fetch.call_count)
+        self.assertIn("/api/kills/regionID/10000002/", fetch.call_args.args[0].full_url)
 
     def test_live_kill_attackers_are_available_without_a_zkill_cache_entry(self):
         with tempfile.TemporaryDirectory() as directory:

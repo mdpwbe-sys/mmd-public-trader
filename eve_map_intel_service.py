@@ -21,11 +21,22 @@ LIVE_TTL_SECONDS = 600
 SOVEREIGNTY_TTL_SECONDS = 15 * 60
 STALE_TTL_SECONDS = 24 * 60 * 60
 ZKILL_TTL_SECONDS = 10 * 60
+ZKILL_AREA_TTL_SECONDS = 10 * 60
 ENTITY_NAME_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_KILL_ATTACKERS = 20
 ZKILL_USER_AGENT = os.environ.get(
-    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd-public-trader)"
+    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd)"
 )
+
+
+def default_cache_path() -> Path:
+    try:
+        from platform_state import state_path
+        return Path(state_path("cache", "eve_map_intel.json"))
+    except ImportError:
+        pass
+    appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    return appdata / "MMD-Trader" / "cache" / "eve_map_intel.json"
 
 
 def _stream_kills(system_id: int) -> list[dict]:
@@ -51,6 +62,23 @@ def _merge_kills(live_kills: list[dict], historical_kills: list[dict], limit: in
     return sorted(merged.values(), key=lambda row: row.get("time") or "", reverse=True)[:max(1, int(limit))]
 
 
+def _normalise_zkill_kill(row: dict, fallback_system_id: int | None = None) -> dict:
+    """Keep the compact kill format shared by system and area history."""
+    attackers = [{
+        key: attacker.get(key) for key in ("character_id", "corporation_id", "alliance_id", "ship_type_id", "final_blow", "damage_done")
+        if attacker.get(key) is not None
+    } for attacker in row.get("attackers", []) if isinstance(attacker, dict)]
+    attackers.sort(key=lambda attacker: (not bool(attacker.get("final_blow")), -int(attacker.get("damage_done", 0))))
+    killmail_id = int(row.get("killmail_id", 0) or 0)
+    return {
+        "killmail_id": killmail_id, "time": row.get("killmail_time"), "value": row.get("zkb", {}).get("totalValue", 0),
+        "solar_system_id": int(row.get("solar_system_id") or fallback_system_id or 0), "ship_type_id": row.get("victim", {}).get("ship_type_id"),
+        "url": f"https://zkillboard.com/kill/{killmail_id}/", "victim_character_id": row.get("victim", {}).get("character_id"),
+        "victim_corporation_id": row.get("victim", {}).get("corporation_id"), "victim_alliance_id": row.get("victim", {}).get("alliance_id"),
+        "attackers": attackers[:MAX_KILL_ATTACKERS], "attacker_count": len(attackers),
+    }
+
+
 def danger_score(ship_kills: int, pod_kills: int) -> int:
     """A bounded logarithmic score; pod losses carry a deliberately higher weight."""
     raw = max(0, int(ship_kills)) + max(0, int(pod_kills)) * 2.5
@@ -69,8 +97,7 @@ def danger_band(score: int) -> str:
 
 class EveMapIntelService:
     def __init__(self, cache_path: Path | None = None, now=time.time, fetch_json=None, fetch_names=None, live_kills=None):
-        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        self.cache_path = Path(cache_path or local / "evernus.com" / "Evernus" / "cache" / "eve_map_intel.json")
+        self.cache_path = Path(cache_path or default_cache_path())
         self.now = now
         self.fetch_json = fetch_json or self._fetch_esi
         self.fetch_names = fetch_names or self._fetch_entity_names
@@ -235,27 +262,8 @@ class EveMapIntelService:
                 return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", [])), "updated_at": entry["updated_at"], "state": "fresh"}
             if live_kills:
                 return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", []) if entry else []), "updated_at": now, "state": "live"}
-            url = f"https://zkillboard.com/api/kills/solarSystemID/{system_id}/"
-            request = urllib.request.Request(url, headers={"User-Agent": ZKILL_USER_AGENT, "Accept-Encoding": "gzip"})
             try:
-                with urllib.request.urlopen(request, timeout=8) as response:
-                    raw = response.read()
-                    if response.headers.get("Content-Encoding", "").lower() == "gzip":
-                        raw = gzip.decompress(raw)
-                    rows = json.loads(raw.decode("utf-8"))
-                kills = []
-                for row in rows[:5]:
-                    attackers = [{
-                        key: attacker.get(key) for key in ("character_id", "corporation_id", "alliance_id", "ship_type_id", "final_blow", "damage_done")
-                        if attacker.get(key) is not None
-                    } for attacker in row.get("attackers", [])]
-                    attackers.sort(key=lambda attacker: (not bool(attacker.get("final_blow")), -int(attacker.get("damage_done", 0))))
-                    kills.append({
-                        "killmail_id": row.get("killmail_id"), "time": row.get("killmail_time"), "value": row.get("zkb", {}).get("totalValue", 0),
-                        "solar_system_id": int(row.get("solar_system_id") or system_id), "ship_type_id": row.get("victim", {}).get("ship_type_id"), "url": f"https://zkillboard.com/kill/{row.get('killmail_id')}/",
-                        "victim_character_id": row.get("victim", {}).get("character_id"), "victim_corporation_id": row.get("victim", {}).get("corporation_id"), "victim_alliance_id": row.get("victim", {}).get("alliance_id"),
-                        "attackers": attackers[:MAX_KILL_ATTACKERS], "attacker_count": len(attackers),
-                    })
+                kills = self._fetch_zkill_kills(f"https://zkillboard.com/api/kills/solarSystemID/{system_id}/", fallback_system_id=system_id)
                 zkill[str(system_id)] = {"updated_at": now, "kills": kills}
                 cache["zkill"] = zkill
                 self._write_cache(cache)
@@ -265,13 +273,67 @@ class EveMapIntelService:
                     return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", [])), "updated_at": entry.get("updated_at"), "state": "stale", "error": str(exc)}
                 return {"ok": False, "kills": live_kills, "state": "unavailable", "error": str(exc)}
 
+    @staticmethod
+    def _area_endpoint(kind: str, area_id: int) -> str:
+        endpoint = {"region": "regionID", "constellation": "constellationID"}.get(str(kind).lower())
+        if not endpoint:
+            raise ValueError("unsupported map area")
+        return f"https://zkillboard.com/api/kills/{endpoint}/{int(area_id)}/"
+
+    @staticmethod
+    def _area_cache_key(kind: str, area_id: int) -> str:
+        return f"{str(kind).lower()}:{int(area_id)}"
+
+    @staticmethod
+    def _find_cached_kill(cache: dict, system_id: int, killmail_id: int) -> dict | None:
+        entries = [cache.get("zkill", {}).get(str(system_id), {})]
+        entries.extend((cache.get("zkill_areas", {}) or {}).values())
+        for entry in entries:
+            kill = next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+            if kill:
+                return kill
+        return None
+
+    @staticmethod
+    def _read_zkill_response(url: str) -> list:
+        request = urllib.request.Request(url, headers={"User-Agent": ZKILL_USER_AGENT, "Accept-Encoding": "gzip"})
+        with urllib.request.urlopen(request, timeout=8) as response:
+            raw = response.read()
+            if response.headers.get("Content-Encoding", "").lower() == "gzip":
+                raw = gzip.decompress(raw)
+        payload = json.loads(raw.decode("utf-8"))
+        return payload if isinstance(payload, list) else []
+
+    def _fetch_zkill_kills(self, url: str, fallback_system_id: int | None = None, limit: int = 5) -> list[dict]:
+        return [_normalise_zkill_kill(row, fallback_system_id) for row in self._read_zkill_response(url)[:max(1, int(limit))] if isinstance(row, dict)]
+
+    def get_recent_area_kills(self, kind: str, area_id: int) -> dict:
+        """Lazy zKill history for a selected region/constellation, cached per area."""
+        kind, area_id = str(kind).lower(), int(area_id)
+        cache_key = self._area_cache_key(kind, area_id)
+        with self._lock:
+            cache, now = self._read_cache(), self.now()
+            areas = cache.get("zkill_areas", {})
+            entry = areas.get(cache_key)
+            if entry and now - entry.get("updated_at", 0) < ZKILL_AREA_TTL_SECONDS:
+                return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry["updated_at"], "state": "fresh"}
+            try:
+                kills = self._fetch_zkill_kills(self._area_endpoint(kind, area_id))
+                areas[cache_key] = {"updated_at": now, "kills": kills}
+                cache["zkill_areas"] = areas
+                self._write_cache(cache)
+                return {"ok": True, "kills": kills, "updated_at": now, "state": "live"}
+            except Exception as exc:
+                if entry:
+                    return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry.get("updated_at"), "state": "stale", "error": str(exc)}
+                return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
+
     def get_kill_attackers(self, system_id: int, killmail_id: int) -> dict:
         """Resolve attacker and ship names only when a cached kill is hovered."""
         system_id, killmail_id = int(system_id), int(killmail_id)
         with self._lock:
             kill = next((row for row in self.live_kills(system_id) or [] if int(row.get("killmail_id", 0)) == killmail_id), None)
-            entry = self._read_cache().get("zkill", {}).get(str(system_id), {})
-            kill = kill or next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+            kill = kill or self._find_cached_kill(self._read_cache(), system_id, killmail_id)
             if not kill:
                 return {"ok": False, "attackers": [], "state": "unavailable"}
             attackers = kill.get("attackers", [])[:MAX_KILL_ATTACKERS]
@@ -331,8 +393,7 @@ class EveMapIntelService:
         system_id, killmail_id = int(system_id), int(killmail_id)
         with self._lock:
             kill = next((row for row in self.live_kills(system_id) or [] if int(row.get("killmail_id", 0)) == killmail_id), None)
-            entry = self._read_cache().get("zkill", {}).get(str(system_id), {})
-            kill = kill or next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+            kill = kill or self._find_cached_kill(self._read_cache(), system_id, killmail_id)
         if not kill:
             return {"ok": False, "victim": {}, "state": "unavailable"}
         victim = {
@@ -394,6 +455,10 @@ def get_live_intel(force=False):
 
 def get_recent_kills(system_id):
     return _default_service.get_recent_kills(system_id)
+
+
+def get_recent_area_kills(kind, area_id):
+    return _default_service.get_recent_area_kills(kind, area_id)
 
 
 def get_kill_attackers(system_id, killmail_id):

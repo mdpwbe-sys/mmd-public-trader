@@ -4,42 +4,19 @@ Tous les changements notables sont documentés ici. Le format suit les
 principes de [Keep a Changelog](https://keepachangelog.com/), le versionnage
 est en [SemVer](https://semver.org/).
 
-## [0.1.6] — 2026-09-03
-
-### Ajouté
-- **Combat map live** : le flux R2Z2 zKillboard est consommé uniquement lorsque la carte est ouverte. Les killmails datés de moins de cinq minutes deviennent des marqueurs temporaires sur leur système ; le flux est borné, dédoublonné et utilise un backoff respectueux.
-- **Ciel 4K optimisé** : panorama WebP équirectangulaire, coquille d'étoiles proches et nappes de gaz à champ de densité stable. Le rendu réduit temporairement sa résolution pendant l'orbite, puis revient à sa qualité maximale à l'arrêt.
+## [Unreleased]
 
 ### Corrigé
-- L’assistant de premier lancement attend désormais les réponses asynchrones du pont pywebview : une configuration existante ne réapparaît plus et l’enregistrement peut réellement déclencher la connexion EVE.
-- L’exécutable embarque explicitement les modules d’intel carte chargés dynamiquement.
-
-## [0.1.4] — 2026-09-03
-
-### Ajouté
-- **New Eden 3D Tactical Map** : positions SDE et stargates authentiques, recherche/focus caméra, labels région/constellation/système selon le zoom, route avec alternative high-sec et marqueurs EVE-style.
-- **Live tactical overlays** : Traffic et Danger depuis ESI public avec cache résilient ; flux par gate représentés par des particules directionnelles estimées depuis les totaux de sauts des deux systèmes.
-- **Influence & intel** : couches Player Sov (null-sec joueur uniquement) et Empires & NPC ; détails zKillboard au clic, chargés paresseusement et mis en cache.
-- **Pilot map tracking (opt-in)** : la position des personnages ESI ayant autorisé `esi-location.read_location.v1` est actualisée toutes les 15 secondes tant que la carte est ouverte. Le suivi s'arrête dès la fermeture de la carte.
-
-### Corrigé
-- Les personnages révoqués ou sans access token ne sont plus présentés comme connectés ; les profils importés restent visibles mais éteints.
-- Le rendu de carte est synchronisé avec le fond céleste optimisé, les halos d'influence et la taille des systèmes plafonnée en pixels.
-
-## [0.1.3] — 2026-08-22
-
-### Ajouté
-- **Build exécutable autonome (Option B)** : `.exe` onefile via PyInstaller + assistant de premier lancement (l'utilisateur fournit son propre `CLIENT_ID`/`CLIENT_SECRET` CCP, aucun secret embarqué).
-- **Trader universel** : stations BUY/SELL configurables par l'utilisateur, frais de faction dynamiques (via SDE), gestion des citadelles (Upwell + ID brut).
-- **Hotkeys globaux** : `Alt+Shift+F` (suivant) / `Ctrl+Shift+F` (précédent).
-- **Fast Copy Price** : copie du prix recommandé au presse-papiers au format décimal EVE.
-
-### Corrigé (neutralisation pour distribution publique)
-- Suppression de toute donnée personnelle du code (User-Agent, chemins `E:\EVE\...`, `%LOCALAPPDATA%\mmd.com\Mmd`, vault Obsidian).
-- Bases de données opérationnelles redirigées vers le répertoire d'état persistant (`%APPDATA%/MMD-Trader`) au lieu des chemins legacy.
-- `eve.db` (SDE 239 Mo) non embarqué : remplacé par un **SDE léger embarqué** (`reference/sde/sde_light.json`, ~0.6 Mo) généré du dump CCP — résolution station→système→région→faction hors-ligne, sans crash sur installation neuve.
-- Scopes CCP documentés alignés sur `mmd_sso.py` (assets, contracts, divisions, blueprints, etc.).
-- Promesses marketing tempérées (analyse concurrence ~5 min cache ESI, stockage WAL atomique, export = aide à l'action utilisateur).
+- **New Eden security** : les valeurs brutes SDE/ESI à partir de `0.45` sont
+  maintenant classées high-sec, conformément à l'affichage en jeu. Le routage
+  high-sec utilise la même règle.
+- **Combat intel** : R2Z2 live et l'historique zKill de système/constellation/
+  région se complètent par `killmail_id`; aucun fan-out par système pour une
+  sélection de zone.
+- **Combat markers** : les alertes tactiques restent visibles 30 minutes (au
+  lieu de cinq), avec une rétention locale de combat de 60 minutes.
+- **Map cache** : le cache live de la carte est désormais écrit sous
+  `%APPDATA%/MMD-Trader/cache` au lieu du répertoire historique Evernus.
 
 ## [0.1.2] — 2026-08-09
 
@@ -81,7 +58,7 @@ est en [SemVer](https://semver.org/).
   `test_regression_d040.py` 3/3 · `test_yoyo_char3.py` 1/1 ·
   `test_window_stability.py` 5/5 · `test_orders_to_update.py` 9/9 ·
   `test_popup_stability.js` / `test_keyboard_navigation.js` OK.
-- Aucune régression sur `mmd_margin.py` (moteur de marge) ni `fifo_overtaken`.
+- Aucune régression sur `evernus_margin.py` (moteur de marge) ni `fifo_overtaken`.
 
 ## [0.1.1] — précédente release étiquetée
 - Base de calcul de marge validée (ticks, station matching, plancher 100 ISK,

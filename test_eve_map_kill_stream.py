@@ -146,13 +146,22 @@ class EveMapKillStreamTests(unittest.TestCase):
         stream._thread = AliveThread()
         marker = marker_from_killmail({
             "killmail_id": 99, "solar_system_id": 30000142,
-            "killmail_time": "2026-09-03T09:57:00Z",
+            "killmail_time": "2026-09-03T09:30:00Z",
         }, now=self.now)
         stream._markers[99] = marker
         with stream._lock:
             stream._state = "live"
         self.assertEqual([], stream.recent_markers()["markers"])
         self.assertEqual([99], [row["killmail_id"] for row in stream.recent_kills(30000142)])
+
+    def test_canvas_marker_window_keeps_twenty_minute_combat_visible(self):
+        stream = EveMapKillStream(now=lambda: self.now)
+        marker = marker_from_killmail({
+            "killmail_id": 100, "solar_system_id": 30000142,
+            "killmail_time": "2026-09-03T09:45:00Z",
+        }, now=self.now)
+        stream._markers[100] = marker
+        self.assertEqual([100], [row["killmail_id"] for row in stream.recent_markers()["markers"]])
 
 
 if __name__ == "__main__":

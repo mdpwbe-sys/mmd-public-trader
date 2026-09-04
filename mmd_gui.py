@@ -320,6 +320,14 @@ class Api:
         except Exception as exc:
             return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
 
+    def get_eve_map_recent_area_kills(self, kind, area_id):
+        """Lazy, cached zKill detail for one selected region or constellation."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_recent_area_kills(kind, area_id)
+        except Exception as exc:
+            return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
+
     def get_eve_map_combat_markers(self):
         """Return the bounded global R2Z2 feed used by the visible map only."""
         try:

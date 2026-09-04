@@ -15,15 +15,15 @@ function element() {
 }
 
 test('search result focuses the rendered node coordinates', async () => {
-  const elements = new Map(['eve-map-overlay', 'eve-map-canvas', 'eve-map-panel', 'eve-route-from', 'eve-map-search', 'eve-map-results', 'eve-map-fit', 'eve-map-gates', 'eve-map-traffic', 'eve-map-danger', 'eve-map-character', 'eve-map-route', 'eve-route-to', 'eve-route-result'].map(id => [id, element()]));
+  const elements = new Map(['eve-map-overlay', 'eve-map-canvas', 'eve-map-content', 'eve-map-panel', 'eve-map-panel-toggle', 'eve-route-from', 'eve-map-search', 'eve-map-results', 'eve-map-fit', 'eve-map-gates', 'eve-map-traffic', 'eve-map-danger', 'eve-map-character', 'eve-map-route', 'eve-map-route-clear', 'eve-route-to', 'eve-route-result'].map(id => [id, element()]));
   const documentListeners = {};
   const graph = {
     backgroundColor() { return this; }, graphData(data) { this.nodes = data.nodes; return this; }, nodeId() { return this; }, nodeLabel() { return this; }, nodeColor() { return this; }, nodeVal() { return this; }, nodeRelSize() { return this; }, nodeResolution() { return this; }, nodeOpacity() { return this; }, nodeVisibility() { return this; }, linkVisibility() { return this; }, linkColor() { return this; }, linkOpacity() { return this; }, linkWidth() { return this; }, enableNodeDrag() { return this; }, nodePositionUpdate() { return this; }, onNodeClick() { return this; }, onNodeRightClick() { return this; }, onBackgroundClick() { return this; }, onNodeHover() { return this; }, width(value) { if (value !== undefined) this.widthValue = value; return this; }, height(value) { if (value !== undefined) this.heightValue = value; return this; }, d3Force() { return this; }, cooldownTicks() { return this; }, zoomToFit() {}, resumeAnimation() {}, pauseAnimation() {},
     cameraPosition(position, target) { this.lastCamera = { position, target }; },
   };
   const dataset = { systems: [
-    { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 0, y: 0, z: 0 } },
-    { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, position_m: { x: 1, y: 0, z: 0 } },
+    { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 0, y: 0, z: 0 } },
+    { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 1, y: 0, z: 0 } },
   ], gates: [{ source: 30000142, target: 30000144 }] };
   let pilotSystemId = 30000142;
   let onMapResize;
@@ -46,7 +46,7 @@ test('search result focuses the rendered node coordinates', async () => {
   elements.get('eve-map-canvas').clientWidth = 1200; elements.get('eve-map-canvas').clientHeight = 750; onMapResize();
   assert.equal(graph.widthValue, 1200); assert.equal(graph.heightValue, 750);
   assert.match(elements.get('eve-map-panel').innerHTML, /LIVE INTEL/);
-  assert.match(elements.get('eve-map-panel').innerHTML, /Pilotes actifs/);
+  assert.match(elements.get('eve-map-panel').innerHTML, /Active pilots/);
   assert.match(elements.get('eve-map-panel').innerHTML, /<br>/);
   assert.notEqual(window.__eveMapTest.characterColor({ character_id: 1 }), window.__eveMapTest.characterColor({ character_id: 2 }));
   const pilotRing = window.__eveMapTest.characterRingSegments([{ character_id: 1 }, { character_id: 2 }]);
@@ -63,9 +63,32 @@ test('search result focuses the rendered node coordinates', async () => {
   window.setEveMapOrigin(30000142);
   window.setEveMapDestination(30000144);
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.match(elements.get('eve-route-result').innerHTML, /1 saut/);
+  assert.match(elements.get('eve-route-result').innerHTML, /1 jump/);
   assert.match(elements.get('eve-route-result').innerHTML, /eve-route-square/);
   assert.match(elements.get('eve-route-result').innerHTML, /Ship kills: 7/);
+  const systemSelection = { kind: 'system', target: dataset.systems[0] }, constellationSelection = { kind: 'constellation', target: { id: 10, name: 'Kimotoro' } }, regionSelection = { kind: 'region', target: { id: 1, name: 'The Forge' } };
+  assert.equal(window.__eveMapTest.selectionSystems(systemSelection).length, 1, 'la sélection système ne contient qu’un système');
+  assert.equal(window.__eveMapTest.selectionSystems(constellationSelection).length, 2, 'la sélection constellation agrège ses systèmes');
+  assert.equal(window.__eveMapTest.selectionSystems(regionSelection).length, 2, 'la sélection région agrège ses systèmes');
+  const constellationLive = window.__eveMapTest.aggregateLiveIntel(window.__eveMapTest.selectionSystems(constellationSelection));
+  assert.equal(constellationLive.ship_jumps, 42315, 'l’intel ESI de zone agrège les systèmes disponibles sans requête supplémentaire');
+  assert.match(window.__eveMapTest.selectionInfoMarkup(systemSelection), /Jita.*0\.9/, 'INFOS adapte le titre à un système');
+  assert.match(window.__eveMapTest.selectionInfoMarkup(constellationSelection), /Constellation.*Region/s, 'INFOS affiche région et niveau pour une constellation');
+  assert.match(window.__eveMapTest.selectionInfoMarkup(regionSelection), /Region.*Systems/s, 'INFOS adapte son contenu à une région');
+  const panelKill = { solar_system_id: 30000142 };
+  assert.equal(window.__eveMapTest.panelKillLocation(panelKill, systemSelection), '', 'un kill système ne répète pas sa localisation');
+  assert.equal(window.__eveMapTest.panelKillLocation(panelKill, constellationSelection), 'Jita', 'un kill constellation affiche son système');
+  assert.equal(window.__eveMapTest.panelKillLocation(panelKill, regionSelection), 'Jita · Kimotoro', 'un kill région affiche système et constellation');
+  assert.match(window.__eveMapTest.killRowsMarkup([{ killmail_id: 42, solar_system_id: 30000142, time: '2026-09-04T11:12:00Z', value: 2e6, ship_type_id: 34, url: 'https://zkillboard.com/kill/42/' }], regionSelection), /data-kill-system-id="30000142"/, 'le popover peut retrouver le système du kill, même depuis une région');
+  assert.equal(window.__eveMapTest.togglePanelSection('intel'), false, 'un accordéon se ferme sans toucher aux autres sections');
+  assert.equal(window.__eveMapTest.panelSectionMarkup('info', 'INFOS', '').includes('is-open'), true, 'l’état ouvert reste conservé lors d’une nouvelle sélection');
+  assert.equal(window.__eveMapTest.setPanelCollapsed(true), true, 'le panneau peut être entièrement escamoté');
+  assert.equal(window.__eveMapTest.setPanelCollapsed(false), false, 'le toggle du header peut rouvrir le panneau');
+  assert.equal(window.__eveMapTest.isKillPopoverInteractionTarget({ closest: selector => selector === '.eve-kill' ? {} : null }, { contains: () => false }), true, 'un déplacement/clic entre la ligne kill et son popover reste interactif');
+  assert.equal(window.__eveMapTest.isKillPopoverInteractionTarget({}, { contains: () => false }), false, 'un clic extérieur ferme le popover kill');
+  assert.match(window.__eveMapTest.attackerPopoverMarkup({ attackers: [{ character_id: 9, pilot_name: 'Pilot test', ship_name: 'Loki', zkill_url: 'https://zkillboard.com/character/9/' }], total_attackers: 1 }), /target="_blank"/, 'le popover conserve des liens cliquables vers les profils attackers');
+  assert.equal(window.clearEveMapRoute(), true, 'Effacer réinitialise la route');
+  assert.equal(elements.get('eve-route-from').value, ''); assert.equal(elements.get('eve-route-to').value, ''); assert.equal(elements.get('eve-route-result').textContent, '');
 });
 
 test('viewport clipping retains the visible portion of a gate crossing the screen edge', () => {
@@ -84,6 +107,14 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   const focusPose = window.__eveMapTest.cameraPose({ x: 0, y: 0, z: 0 }, 100);
   const homeDirection = { x: jitaShot.position.x - jitaShot.target.x, y: jitaShot.position.y - jitaShot.target.y, z: jitaShot.position.z - jitaShot.target.z };
   assert.ok(Math.abs(focusPose.x / focusPose.y - homeDirection.x / homeDirection.y) < 1e-9 && Math.abs(focusPose.z / focusPose.y - homeDirection.z / homeDirection.y) < 1e-9, 'les focus système restent dans le plan de caméra New Eden');
+  const preservedFocus = window.__eveMapTest.cameraFocusPosition(
+    { x: 80, y: -20, z: 15 },
+    { position: { x: 18, y: 45, z: 73 } },
+    { target: { x: 8, y: 5, z: 3 } },
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(preservedFocus)), { x: 90, y: 20, z: 85 }, 'un focus système translate la caméra et conserve exactement son angle courant');
+  const fallbackFocus = window.__eveMapTest.cameraFocusPosition({ x: 0, y: 0, z: 0 }, null, null, 42);
+  assert.deepEqual(JSON.parse(JSON.stringify(fallbackFocus)), JSON.parse(JSON.stringify(window.__eveMapTest.cameraPose({ x: 0, y: 0, z: 0 }, 42))), 'le premier focus conserve une pose New Eden déterministe sans caméra active');
   const planarNodes = window.__eveMapTest.displayNodes([
     { id: 1, position_m: { x: 0, y: -9000, z: 0 } },
     { id: 2, position_m: { x: 400, y: 12000, z: 600 } },
@@ -102,6 +133,8 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.ok(window.__eveMapTest.systemSelectionRadius(2500) > window.__eveMapTest.systemSelectionRadius(100), 'la zone de clic d’un système augmente au dézoom');
   const mapMarkup = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
   assert.match(mapMarkup, /id="eve-map-fit"/, 'l’en-tête de carte expose un unique bouton Home');
+  assert.match(mapMarkup, /id="eve-map-panel-toggle"/, 'l’en-tête expose un toggle unique pour le panneau intel');
+  assert.doesNotMatch(mapMarkup, /eve-map-panel-collapse|eve-map-panel-handle/, 'les contrôles latéraux dupliqués sont supprimés');
   assert.match(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), /ForceGraph3D\(\{ controlType: 'orbit' \}\)/, 'la carte utilise OrbitControls, nécessaire au pan strictement aligné à l’écran');
   assert.doesNotMatch(mapMarkup, /id="eve-map-reset-camera"/, 'le bouton de réinitialisation redondant est supprimé');
   assert.doesNotMatch(mapMarkup, /id="eve-map-character"/, 'la carte réutilise le sélecteur personnage global MMD');
@@ -111,9 +144,19 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(true), 15000, 'le tracking ESI actualise tous les pilotes connectés lorsque la carte est ouverte');
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(false), null, 'le tracking ESI est arrêté lorsque la carte est masquée');
   const oneLiveKill = window.__eveMapTest.liveWithCombat({ danger: 0 }, 1);
+  assert.equal(window.__eveMapTest.security(.487), 'high', 'un statut brut 0.487 est high-sec comme son affichage 0.5 en jeu');
   const threeLiveKills = window.__eveMapTest.liveWithCombat({ danger: 0 }, 3);
-  assert.deepEqual(JSON.parse(JSON.stringify(oneLiveKill)), { ship_jumps: 0, ship_kills: 0, pod_kills: 0, npc_kills: 0, recent_combat_kills: 1, danger: 20, danger_band: 'yellow' }, 'un kill R2Z2 récent relève immédiatement le danger du système');
+  const podCombat = window.__eveMapTest.liveWithCombat({ danger: 13 }, { kills: 6, pods: 2 });
+  assert.deepEqual(JSON.parse(JSON.stringify(oneLiveKill)), { ship_jumps: 0, ship_kills: 0, pod_kills: 0, npc_kills: 0, recent_combat_kills: 1, recent_combat_pods: 0, danger: 20, danger_band: 'yellow' }, 'un kill R2Z2 récent relève immédiatement le danger du système');
   assert.equal(threeLiveKills.danger_band, 'orange', 'plusieurs kills R2Z2 élèvent l’alerte même avant le prochain agrégat ESI');
+  assert.equal(podCombat.danger, 85, 'deux pods sur six kills font immédiatement dominer le Danger live, même si ESI reste à 13');
+  assert.equal(podCombat.recent_combat_pods, 2, 'le panneau conserve le nombre de pods live');
+  const mergedAreaKills = window.__eveMapTest.mergeKillRows(
+    [{ killmail_id: 84, time: '2026-09-04T02:35:00Z', value: 99, attacker_count: 2 }],
+    [{ killmail_id: 84, time: '2026-09-04T02:34:00Z', value: 1, ship_type_id: 670 }, { killmail_id: 83, time: '2026-09-04T02:10:00Z', value: 2 }],
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(mergedAreaKills.map(kill => kill.killmail_id))), [84, 83], 'R2Z2 live et zKill historique de zone restent visibles sans doublon');
+  assert.equal(mergedAreaKills[0].value, 99, 'la version R2Z2 en direct complète/priorise le même kill historique');
   const skyShader = window.__eveMapTest.skyGpuFragmentShader;
   assert.match(skyShader, /float nebulaDensity/, 'le gaz repose sur un champ de nuages stable plutôt que sur un motif de rubans');
   assert.doesNotMatch(skyShader, /gasRibbon/, 'aucune sinusoïde visible ne doit découper le fond en bandes');
@@ -152,12 +195,15 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.equal(inferredGateTraffic, 100, 'le trafic de gate est une estimation équilibrée depuis les deux systèmes');
   const combatGroups = window.__eveMapTest.combatMarkerGroups([
     { system_id: 30000142, happenedAt: 100, expiresAt: 900_000 },
-    { system_id: 30000142, happenedAt: 110, expiresAt: 900_010 },
-    { system_id: 30000142, happenedAt: 120, expiresAt: 900_020 },
+    { system_id: 30000142, happenedAt: 110, expiresAt: 900_010, victim_ship_type_id: 670 },
+    { system_id: 30000142, happenedAt: 120, expiresAt: 900_020, victim_ship_type_id: 670 },
     { system_id: 30000144, happenedAt: 130, expiresAt: 200 },
   ], 300);
   assert.equal(combatGroups.length, 1, 'les kills expirés sont exclus de la fenêtre tactique');
   assert.equal(combatGroups[0].count, 3, 'les kills récents sont condensés par système');
+  assert.equal(combatGroups[0].pod_count, 2, 'les pods sont distingués des autres kills live');
+  assert.equal(window.__eveMapTest.combatMarkerLabel({ count: 6, pod_count: 2 }), '🔥 6²', 'les pods mixtes sont affichés en exposant');
+  assert.equal(window.__eveMapTest.combatMarkerLabel({ count: 6, pod_count: 6 }), '🥚 6', 'un système à pods uniquement utilise le marqueur œuf');
   assert.equal(combatGroups[0].value, 0, 'la synthèse agrège aussi la valeur ISK détruite');
   assert.equal(window.__eveMapTest.combatActivity(0).symbol, '●');
   assert.equal(window.__eveMapTest.combatActivity(1).symbol, '◉');

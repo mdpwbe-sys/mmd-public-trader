@@ -26,7 +26,7 @@ The New Eden workspace combines CCP SDE topology with optional ESI and zKillboar
 - **Resilient local storage**: SQLite WAL transactions, retry handling, single-instance lock and heartbeat.
 - **Obsidian export**: Write readable trade journals without blocking the application.
 - **New Eden 3D map**: Fixed CCP SDE coordinates, security filters, search, real stargates, safe routing and character positions.
-- **Live tactical overlays**: ESI traffic and danger, R2Z2/zKillboard combat markers, sovereignty and empire influence layers. The combat stream is active only while the map is open.
+- **Live tactical overlays**: ESI traffic and danger, R2Z2/zKillboard combat markers retained on-map for 30 minutes, sovereignty and empire influence layers. The combat stream is active only while the map is open.
 - **Local analyser**: Detect a copied EVE Local roster from the Windows clipboard and open a compact pilot risk summary, independently from the trading workflow.
 
 See [the New Eden map documentation](docs/NEW_EDEN_MAP.md) for the map data and online/offline behaviour.
@@ -57,7 +57,7 @@ See [the New Eden map documentation](docs/NEW_EDEN_MAP.md) for the map data and 
    ```env
    CLIENT_ID=your_client_id_here
    CLIENT_SECRET=your_client_secret_here
-   CALLBACK_URL=http://127.0.0.1:8766/callback
+   CALLBACK_URL=http://127.0.0.1:8765/callback
    ```
 
 4. **Launch the application**:
@@ -87,8 +87,8 @@ See [the New Eden map documentation](docs/NEW_EDEN_MAP.md) for the map data and 
    - `esi-corporations.read_divisions.v1`
    - `esi-characters.read_standings.v1`
    - `esi-skills.read_skills.v1`
-   - `esi-location.read_location.v1` *(optional: show active character positions on the map)*
-5. Set **Callback URL** to `http://127.0.0.1:8766/callback`.
+   - `esi-location.read_location.v1` *(requested by the current MMD SSO flow; used only for active character positions on the map)*
+5. Set **Callback URL** to `http://127.0.0.1:8765/callback`.
 6. Copy your `Client ID` and `Secret Key` into your local `.env` file.
 
 Station names, regions, and item names use the local Evernus SDE when present.

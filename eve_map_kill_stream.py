@@ -11,7 +11,7 @@ import urllib.request
 
 
 R2Z2_BASE = "https://r2z2.zkillboard.com/ephemeral"
-MARKER_TTL_SECONDS = 5 * 60
+MARKER_TTL_SECONDS = 30 * 60
 HISTORY_TTL_SECONDS = 60 * 60
 BOOTSTRAP_MAX_REQUESTS = 240
 STREAM_RESUME_STALE_SECONDS = 120

@@ -5,6 +5,9 @@ from collections import deque
 from pathlib import Path
 
 
+HIGHSEC_THRESHOLD = 0.45
+
+
 class EveMapService:
     def __init__(self, dataset_path=None):
         self.dataset_path = Path(dataset_path or Path(__file__).parent / "gui" / "data" / "eve_map.json")
@@ -37,14 +40,25 @@ class EveMapService:
             return None
         return math.dist(tuple(source["position_m"].values()), tuple(target["position_m"].values()))
 
+    @staticmethod
+    def security_class(security_status):
+        """Match EVE's displayed security band from the raw SDE/ESI value."""
+        security_status = float(security_status or 0)
+        return "high" if security_status >= HIGHSEC_THRESHOLD else "low" if security_status > 0 else "null"
+
     def find_route(self, source_id, target_id, min_security=None):
         self._load()
         source_id, target_id = int(source_id), int(target_id)
         if source_id not in self._systems or target_id not in self._systems:
             return {"error": "unknown_system", "systems": [], "jumps": 0}
+        high_sec_only = min_security == "high"
         if min_security is not None:
-            min_security = float(min_security)
-            if any(float(self._systems[system_id].get("security", 0)) < min_security for system_id in (source_id, target_id)):
+            if high_sec_only:
+                is_allowed = lambda system_id: self.security_class(self._systems[system_id].get("security", 0)) == "high"
+            else:
+                minimum = float(min_security)
+                is_allowed = lambda system_id: float(self._systems[system_id].get("security", 0)) >= minimum
+            if any(not is_allowed(system_id) for system_id in (source_id, target_id)):
                 return {"error": "unsafe_endpoint", "systems": [], "jumps": 0}
         queue, previous = deque([source_id]), {source_id: None}
         while queue:
@@ -57,7 +71,7 @@ class EveMapService:
                 route.reverse()
                 return {"systems": route, "jumps": len(route) - 1}
             for neighbor in sorted(self._adjacency[current]):
-                if min_security is not None and float(self._systems[neighbor].get("security", 0)) < min_security:
+                if min_security is not None and not is_allowed(neighbor):
                     continue
                 if neighbor not in previous:
                     previous[neighbor] = current

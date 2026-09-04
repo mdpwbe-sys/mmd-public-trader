@@ -1,14 +1,15 @@
 /* Offline New Eden graph.  Positions are fixed from CCP's physical coordinates. */
 (function () {
-  const state = { graph: null, data: null, nodesById: null, renderNodes: [], trafficBySystem: new Map(), gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyField: null, skyImage: null, skyRays: null, skyTexture: null, skyTextureLoading: false, skyStars: [], skyFrameKey: null, skyLastPaintAt: 0, skyInteracting: false, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, killHoverKey: null, killPopover: null, characters: [], characterTrackingTimer: null, combatMarkerTimer: null, combatMarkers: new Map(), live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
+  const state = { graph: null, data: null, nodesById: null, renderNodes: [], trafficBySystem: new Map(), gateDegrees: new Map(), labelGroups: null, labelHitTargets: [], pointer: null, suppressNodeClickUntil: 0, linkCanvas: null, skyCanvas: null, skyField: null, skyImage: null, skyRays: null, skyTexture: null, skyTextureLoading: false, skyStars: [], skyFrameKey: null, skyLastPaintAt: 0, skyInteracting: false, nodeScaleKey: null, linkFrame: null, resizeMap: null, resizeObserver: null, lastLinkDraw: 0, visible: false, route: null, originId: null, destinationId: null, lastNodeClick: null, hoverCandidate: null, killHoverKey: null, killPopover: null, killPopoverHideTimer: null, panelSelection: null, panelCollapsed: false, panelSections: { info: true, intel: true, route: true }, characters: [], characterTrackingTimer: null, combatMarkerTimer: null, combatMarkers: new Map(), areaKillHistory: new Map(), live: { systems: {}, state: 'unavailable', updated_at: null }, sovereignty: { systems: {}, state: 'unavailable', updated_at: null }, filters: { high: true, low: true, null: true, gates: true, traffic: false, danger: false, sovereignty: false, empires: false } };
   const byId = () => new Map((state.data && state.data.systems || []).map(s => [s.id, s]));
   const api = () => window.pywebview && window.pywebview.api || window.api;
   const mapWorkspace = () => document.getElementById('eve-map-workspace') || document.getElementById('eve-map-overlay');
-  const security = s => s >= .5 ? 'high' : s > 0 ? 'low' : 'null';
+  const HIGHSEC_THRESHOLD = .45;
+  const security = s => s >= HIGHSEC_THRESHOLD ? 'high' : s > 0 ? 'low' : 'null';
   const escapeHtml = value => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const CHARACTER_COLORS = ['#66e7f5', '#ffca62', '#e978b1', '#aa8cff', '#7ee6a9', '#ff956e'];
   const CHARACTER_POSITION_POLL_MS = 15_000;
-  const COMBAT_MARKER_TTL_MS = 5 * 60 * 1000;
+  const COMBAT_MARKER_TTL_MS = 30 * 60 * 1000;
   const characterPositionTrackingInterval = visible => visible ? CHARACTER_POSITION_POLL_MS : null;
   const characterColorInfo = character => {
     const dashboardColor = window.getCharColorInfo?.(character?.name);
@@ -34,24 +35,39 @@
     return groups;
   };
   const visibleCharacterIds = () => [...characterGroups().values()].flat().map(character => character.character_id).sort((left, right) => left - right);
-  function combatDangerScore(count) {
-    const kills = Math.max(0, Number(count) || 0);
-    if (kills >= 10) return 100;
-    if (kills >= 5) return 85;
-    if (kills >= 2) return 55;
-    return kills ? 20 : 0;
+  const CAPSULE_TYPE_ID = 670;
+  const isPodMarker = marker => Number(marker?.victim_ship_type_id) === CAPSULE_TYPE_ID || /\bcapsule\b/i.test(String(marker?.victim_ship_name || ''));
+  const superscriptNumber = value => String(Math.max(0, Number(value) || 0)).replace(/\d/g, digit => '⁰¹²³⁴⁵⁶⁷⁸⁹'[Number(digit)]);
+  function combatDangerScore(combat) {
+    const summary = typeof combat === 'object' && combat ? combat : { kills: combat, pods: 0 };
+    const kills = Math.max(0, Number(summary.kills ?? summary.count) || 0);
+    const pods = Math.min(kills, Math.max(0, Number(summary.pods ?? summary.pod_count) || 0));
+    // A capsule loss is a stronger tactical signal than an ordinary ship loss:
+    // ganks and smartbomb camps should light up immediately, before the next
+    // ESI 24-hour aggregate refresh.
+    const weightedKills = (kills - pods) + pods * 2.5;
+    if (weightedKills >= 10) return 100;
+    if (weightedKills >= 5) return 85;
+    if (weightedKills >= 2) return 55;
+    return weightedKills ? 20 : 0;
   }
   function dangerBandForScore(score) { return score >= 75 ? 'red' : score >= 50 ? 'orange' : score >= 20 ? 'yellow' : 'normal'; }
-  function recentCombatCount(systemId, now = Date.now()) {
-    let count = 0;
-    for (const marker of state.combatMarkers.values()) if (Number(marker?.system_id) === Number(systemId) && now < Number(marker.expiresAt)) count += 1;
-    return count;
+  function recentCombatSummary(systemId, now = Date.now()) {
+    const summary = { kills: 0, pods: 0 };
+    for (const marker of state.combatMarkers.values()) {
+      if (Number(marker?.system_id) !== Number(systemId) || now >= Number(marker.expiresAt)) continue;
+      summary.kills += 1;
+      if (isPodMarker(marker)) summary.pods += 1;
+    }
+    return summary;
   }
-  const liveWithCombat = (base, recentKills) => {
-    const streamDanger = combatDangerScore(recentKills), danger = Math.max(Number(base?.danger) || 0, streamDanger);
-    return { ...(base || {}), ship_jumps: Number(base?.ship_jumps) || 0, ship_kills: Number(base?.ship_kills) || 0, pod_kills: Number(base?.pod_kills) || 0, npc_kills: Number(base?.npc_kills) || 0, recent_combat_kills: recentKills, danger, danger_band: dangerBandForScore(danger) };
+  const liveWithCombat = (base, combat) => {
+    const summary = typeof combat === 'object' && combat ? combat : { kills: combat, pods: 0 };
+    const recentKills = Math.max(0, Number(summary.kills ?? summary.count) || 0), recentPods = Math.min(recentKills, Math.max(0, Number(summary.pods ?? summary.pod_count) || 0));
+    const streamDanger = combatDangerScore({ kills: recentKills, pods: recentPods }), danger = Math.max(Number(base?.danger) || 0, streamDanger);
+    return { ...(base || {}), ship_jumps: Number(base?.ship_jumps) || 0, ship_kills: Number(base?.ship_kills) || 0, pod_kills: Number(base?.pod_kills) || 0, npc_kills: Number(base?.npc_kills) || 0, recent_combat_kills: recentKills, recent_combat_pods: recentPods, danger, danger_band: dangerBandForScore(danger) };
   };
-  const liveFor = system => liveWithCombat(state.live.systems[String(system?.id)] || {}, recentCombatCount(system?.id));
+  const liveFor = system => liveWithCombat(state.live.systems[String(system?.id)] || {}, recentCombatSummary(system?.id));
   const sovereigntyFor = system => state.sovereignty.systems[String(system?.id)] || {};
   function influenceLayers(node, filters = state.filters, sovereignty = sovereigntyFor(node)) {
     const layers = [];
@@ -241,9 +257,9 @@
       state.skyLastPaintAt = 0;
     });
   }
-  const ageText = seconds => seconds == null ? 'indisponible' : seconds < 60 ? 'à l’instant' : `${Math.max(1, Math.round(seconds / 60))} min`;
+  const ageText = seconds => seconds == null ? 'unavailable' : seconds < 60 ? 'just now' : `${Math.max(1, Math.round(seconds / 60))} min`;
   const trafficSize = jumps => Math.min(2.15, 1 + Math.log1p(Math.max(0, jumps)) / Math.log(50000) * 1.15);
-  const nodeSize = node => (node.security >= .5 ? 1.1 : 1) * (state.filters.traffic ? trafficSize(liveFor(node).ship_jumps) : 1);
+  const nodeSize = node => (security(node.security) === 'high' ? 1.1 : 1) * (state.filters.traffic ? trafficSize(liveFor(node).ship_jumps) : 1);
   function buildGateDegrees(gates) {
     const degrees = new Map();
     gates.forEach(gate => { degrees.set(gate.source, (degrees.get(gate.source) || 0) + 1); degrees.set(gate.target, (degrees.get(gate.target) || 0) + 1); });
@@ -510,37 +526,113 @@
       if (name && target) target.textContent = `${influence.kind} · ${name}`;
     } catch (_) { /* The ID remains a safe fallback when public ESI is unavailable. */ }
   }
-  function showSystem(system, { loadDetails = true } = {}) {
-    const panel = document.getElementById('eve-map-panel');
-    const live = liveFor(system), stale = state.live.state === 'stale';
-    const pilots = state.characters.filter(character => character.system_id === system.id).map(character => `<span class="eve-pilot"><i style="background:${characterColor(character)}"></i>${escapeHtml(character.name)}</span>`);
-    const influence = influenceFor(system);
-    state.selectedSystemId = system.id;
-    panel.querySelector('.eve-map-empty')?.remove(); panel.querySelector('.eve-map-system')?.remove();
-    panel.insertAdjacentHTML('afterbegin', `<div class="eve-map-system"><h3>${escapeHtml(system.name)} <small>${system.security.toFixed(1)}</small></h3><dl><dt>Région</dt><dd>${escapeHtml(system.region)}</dd><dt>Constellation</dt><dd>${escapeHtml(system.constellation)}</dd>${influence ? `<dt>Influence</dt><dd class="eve-map-influence" data-eve-influence-id="${influence.id}">${escapeHtml(influence.kind)} · ${influence.id}</dd>` : ''}<dt>ID</dt><dd>${system.id}</dd>${pilots.length ? `<dt>Pilotes actifs</dt><dd>${pilots.join('<br>')}</dd>` : ''}</dl><section class="eve-live-intel"><h4>LIVE INTEL</h4><dl><dt>Traffic</dt><dd>${Number(live.ship_jumps).toLocaleString('fr-BE')} jumps</dd><dt>Kills</dt><dd data-eve-live-kills>${liveKillText(live)}</dd><dt>Danger</dt><dd data-eve-live-danger>${liveDangerMarkup(live)}</dd></dl><small class="eve-live-updated">${stale ? 'Live Intel stale · ' : ''}Updated ${ageText(state.live.age_seconds)}</small><div class="eve-map-latest" data-system-id="${system.id}"><small>Derniers kills zKill : chargement…</small></div></section><div class="eve-map-actions"><button class="btn mini" onclick="setEveMapOrigin(${system.id})">Définir origine</button><button class="btn mini" onclick="setEveMapDestination(${system.id})">Définir destination</button></div></div>`);
-    if (loadDetails) { loadInfluenceName(influence, system.id); loadRecentKills(system.id); }
+  const selectionKey = selection => selection ? `${selection.kind}:${selection.target.id}` : '';
+  const selectionSystems = selection => {
+    if (!selection?.target) return [];
+    if (selection.kind === 'system') return [selection.target];
+    const idKey = selection.kind === 'region' ? 'region_id' : 'constellation_id';
+    return (state.data?.systems || []).filter(system => Number(system[idKey]) === Number(selection.target.id));
+  };
+  const aggregateLiveIntel = systems => {
+    const values = systems.map(liveFor);
+    const total = values.reduce((result, live) => ({
+      ship_jumps: result.ship_jumps + Number(live.ship_jumps || 0), ship_kills: result.ship_kills + Number(live.ship_kills || 0),
+      pod_kills: result.pod_kills + Number(live.pod_kills || 0), npc_kills: result.npc_kills + Number(live.npc_kills || 0),
+      recent_combat_kills: result.recent_combat_kills + Number(live.recent_combat_kills || 0), recent_combat_pods: result.recent_combat_pods + Number(live.recent_combat_pods || 0),
+      danger: Math.max(result.danger, Number(live.danger || 0)),
+    }), { ship_jumps: 0, ship_kills: 0, pod_kills: 0, npc_kills: 0, recent_combat_kills: 0, recent_combat_pods: 0, danger: 0 });
+    return { ...total, danger_band: dangerBandForScore(total.danger) };
+  };
+  const panelSectionMarkup = (key, title, content) => `<section class="eve-map-section ${state.panelSections[key] ? 'is-open' : ''}" data-eve-panel-section="${key}"><button type="button" class="eve-map-section-title" aria-expanded="${state.panelSections[key] ? 'true' : 'false'}" onclick="toggleEveMapPanelSection('${key}')"><span>${title}</span><b aria-hidden="true">${state.panelSections[key] ? '▲' : '▼'}</b></button><div class="eve-map-section-body">${content}</div></section>`;
+  const selectionInfoMarkup = selection => {
+    const target = selection.target;
+    if (selection.kind === 'system') {
+      const pilots = state.characters.filter(character => Number(character.system_id) === Number(target.id)).map(character => `<span class="eve-pilot"><i style="background:${characterColor(character)}"></i>${escapeHtml(character.name)}</span>`);
+      const influence = influenceFor(target);
+      return `<h3>${escapeHtml(target.name)} <small>${Number(target.security).toFixed(1)}</small></h3><dl><dt>Region</dt><dd>${escapeHtml(target.region)}</dd><dt>Constellation</dt><dd>${escapeHtml(target.constellation)}</dd>${influence ? `<dt>Influence</dt><dd class="eve-map-influence" data-eve-influence-id="${influence.id}">${escapeHtml(influence.kind)}</dd>` : ''}${pilots.length ? `<dt>Active pilots</dt><dd>${pilots.join('<br>')}</dd>` : ''}</dl>`;
+    }
+    const systems = selectionSystems(selection), region = selection.kind === 'constellation' ? systems[0]?.region : null;
+    return `<h3>${escapeHtml(target.name)}</h3><dl><dt>Type</dt><dd>${selection.kind === 'region' ? 'Region' : 'Constellation'}</dd>${region ? `<dt>Region</dt><dd>${escapeHtml(region)}</dd>` : ''}<dt>Systems</dt><dd>${systems.length.toLocaleString('fr-BE')}</dd></dl>`;
+  };
+  const panelKillLocation = (kill, selection) => {
+    const system = systemFor(kill.solar_system_id || kill.system_id);
+    if (!system || selection?.kind === 'system') return '';
+    return selection.kind === 'constellation' ? system.name : `${system.name} · ${system.constellation}`;
+  };
+  const recentAreaKills = selection => {
+    const ids = new Set(selectionSystems(selection).map(system => Number(system.id)));
+    return [...state.combatMarkers.values()].filter(marker => ids.has(Number(marker.system_id))).map(marker => ({
+      killmail_id: marker.killmail_id, time: marker.killmail_time, value: marker.value, solar_system_id: marker.system_id,
+      ship_type_id: marker.victim_ship_type_id, url: marker.killmail_id ? `https://zkillboard.com/kill/${marker.killmail_id}/` : '#',
+    })).sort((left, right) => String(right.time || '').localeCompare(String(left.time || ''))).slice(0, 5);
+  };
+  const mergeKillRows = (liveKills, historicalKills, limit = 5) => {
+    const merged = new Map();
+    for (const kill of historicalKills || []) {
+      const id = Number(kill?.killmail_id);
+      if (Number.isFinite(id) && id > 0) merged.set(id, kill);
+    }
+    for (const kill of liveKills || []) {
+      const id = Number(kill?.killmail_id);
+      if (Number.isFinite(id) && id > 0) merged.set(id, { ...(merged.get(id) || {}), ...kill });
+    }
+    return [...merged.values()].sort((left, right) => String(right.time || '').localeCompare(String(left.time || ''))).slice(0, Math.max(1, Number(limit) || 5));
+  };
+  const killRowsMarkup = (kills, selection) => kills.map(kill => {
+    const icon = shipIconUrl(kill.ship_type_id);
+    const image = icon ? `<img class="eve-kill-ship-icon" src="${icon}" alt="" loading="lazy" onerror="this.remove()">` : '';
+    const location = panelKillLocation(kill, selection);
+    return `<a class="eve-kill" data-killmail-id="${Number(kill.killmail_id) || 0}" data-kill-system-id="${Number(kill.solar_system_id || kill.system_id) || 0}" href="${escapeHtml(kill.url || '#')}" target="_blank" rel="noopener">${image}<span><b>${formatKillDate(kill.time)} · ${Math.round(Number(kill.value || 0) / 1e6)} M ISK</b>${location ? `<small>${escapeHtml(location)}</small>` : ''}</span></a>`;
+  }).join('');
+  const areaLatestMarkup = selection => {
+    const entry = state.areaKillHistory.get(selectionKey(selection)), kills = mergeKillRows(recentAreaKills(selection), entry?.kills || []);
+    if (kills.length) return `<h4>LATEST KILLS</h4>${killRowsMarkup(kills, selection)}${entry?.loading ? '<small>Loading zKill history…</small>' : ''}`;
+    if (entry?.state === 'unavailable') return '<small>zKill history unavailable for this area.</small>';
+    if (entry?.state === 'fresh' || entry?.state === 'live' || entry?.state === 'stale') return '<small>No recent zKill history in this area.</small>';
+    return '<small>Loading zKill history…</small>';
+  };
+  const selectionIntelMarkup = selection => {
+    const live = aggregateLiveIntel(selectionSystems(selection)), stale = state.live.state === 'stale';
+    const latest = selection.kind === 'system' ? `<div class="eve-map-latest" data-eve-kill-selection="${selectionKey(selection)}"><small>Latest zKill: loading…</small></div>` : `<div class="eve-map-latest" data-eve-kill-selection="${selectionKey(selection)}">${areaLatestMarkup(selection)}</div>`;
+    return `<dl><dt>Traffic</dt><dd>${Number(live.ship_jumps).toLocaleString('fr-BE')} jumps</dd><dt>Kills</dt><dd data-eve-live-kills>${liveKillText(live)}</dd><dt>Danger</dt><dd data-eve-live-danger>${liveDangerMarkup(live)}</dd></dl><small class="eve-live-updated">${stale ? 'Live Intel stale · ' : ''}Updated ${ageText(state.live.age_seconds)}</small>${latest}`;
+  };
+  function renderPanelSelection(selection, { loadDetails = true } = {}) {
+    const panel = document.getElementById('eve-map-panel'); if (!panel || !selection?.target) return;
+    closeKillPopover(); state.panelSelection = selection; state.selectedSystemId = selection.kind === 'system' ? selection.target.id : null;
+    const host = panel.querySelector?.('#eve-map-selection') || panel;
+    host.innerHTML = `${panelSectionMarkup('info', 'INFOS', selectionInfoMarkup(selection))}${panelSectionMarkup('intel', 'LIVE INTEL', selectionIntelMarkup(selection))}`;
+    if (selection.kind === 'system') { if (loadDetails) loadInfluenceName(influenceFor(selection.target), selection.target.id); loadRecentKills(selection); }
+    else { bindKillHover(host); loadRecentAreaKills(selection); }
   }
-  const liveKillText = live => `Ships ${live.ship_kills} · Pods ${live.pod_kills} · NPC ${live.npc_kills}${live.recent_combat_kills ? ` · R2Z2 ${live.recent_combat_kills} / 5 min` : ''}`;
-  const liveDangerMarkup = live => `<span class="eve-danger-meter eve-danger-meter--${live.danger_band}"><i style="width:${live.danger}%"></i></span> ${live.danger}/100${live.recent_combat_kills ? ' · combat live' : ''}`;
+  function showSystem(system, options = {}) { if (system) renderPanelSelection({ kind: 'system', target: system }, options); }
+  const liveCombatText = live => !live.recent_combat_kills ? '' : live.recent_combat_pods === live.recent_combat_kills ? ` · R2Z2 🥚 ${live.recent_combat_pods} / 30 min` : ` · R2Z2 ${live.recent_combat_kills}${live.recent_combat_pods ? superscriptNumber(live.recent_combat_pods) : ''} / 30 min`;
+  const liveKillText = live => `Ships ${live.ship_kills} · Pods ${live.pod_kills} · NPC ${live.npc_kills}${liveCombatText(live)}`;
+  const liveDangerMarkup = live => `<span class="eve-danger-meter eve-danger-meter--${live.danger_band}"><i style="width:${live.danger}%"></i></span> ${live.danger}/100${live.recent_combat_kills ? ` · combat live${live.recent_combat_pods ? ` (${live.recent_combat_pods} pod${live.recent_combat_pods === 1 ? '' : 's'})` : ''}` : ''}`;
   function refreshSelectedLivePanel() {
-    const system = systemFor(state.selectedSystemId); if (!system) return;
-    const panel = document.getElementById('eve-map-panel'), live = liveFor(system);
+    const selection = state.panelSelection; if (!selection) return;
+    const panel = document.getElementById('eve-map-panel'), live = aggregateLiveIntel(selectionSystems(selection));
     const kills = panel?.querySelector?.('[data-eve-live-kills]'), danger = panel?.querySelector?.('[data-eve-live-danger]');
     if (kills) kills.textContent = liveKillText(live);
     if (danger) danger.innerHTML = liveDangerMarkup(live);
+    if (selection.kind !== 'system') {
+      const latest = panel?.querySelector?.(`[data-eve-kill-selection="${selectionKey(selection)}"]`);
+      if (latest) latest.innerHTML = areaLatestMarkup(selection);
+      if (latest) bindKillHover(latest);
+    }
   }
   const visibleNode = node => state.filters[security(node.security)];
   const isAreaMember = (node, focus = state.areaFocus) => !focus || (focus.kind === 'region' ? node.region_id === focus.area.id : node.constellation_id === focus.area.id);
-  const baseNodeColor = node => node.security >= .5 ? '#36d7a0' : node.security > 0 ? '#efb546' : '#e45878';
-  const focusNodeColor = (node, focus = state.areaFocus) => isAreaMember(node, focus) ? baseNodeColor(node) : (node.security >= .5 ? '#23675b' : node.security > 0 ? '#745d31' : '#71394a');
+  const baseNodeColor = node => security(node.security) === 'high' ? '#36d7a0' : node.security > 0 ? '#efb546' : '#e45878';
+  const focusNodeColor = (node, focus = state.areaFocus) => isAreaMember(node, focus) ? baseNodeColor(node) : (security(node.security) === 'high' ? '#23675b' : node.security > 0 ? '#745d31' : '#71394a');
   function render() { if (!state.graph) return; state.graph.nodeVisibility(visibleNode).nodeColor(focusNodeColor).nodeVal(node => nodeSize(node) * (isAreaMember(node) ? 1.22 : .84)).nodeOpacity(.96).nodeLabel(node => `${node.name} · ${node.security.toFixed(2)}${state.filters.traffic ? ` · ${Number(liveFor(node).ship_jumps).toLocaleString('fr-BE')} jumps` : ''}${state.filters.danger ? ` · Danger ${liveFor(node).danger}/100` : ''}`).linkVisibility(link => state.filters.gates && visibleNode(link.source) && visibleNode(link.target)); }
   function clearSystemSelection() {
-    if (!state.selectedSystemId) return;
-    state.selectedSystemId = null;
-    state.lastNodeClick = null;
+    if (!state.panelSelection) return;
+    state.selectedSystemId = null; state.panelSelection = null;
+    state.lastNodeClick = null; state.areaFocus = null; render();
     const panel = document.getElementById('eve-map-panel');
-    panel?.querySelector('.eve-map-system')?.remove();
-    if (panel && !panel.querySelector('.eve-map-empty')) panel.insertAdjacentHTML('afterbegin', '<div class="eve-map-empty">Sélectionnez un système.</div>');
+    closeKillPopover();
+    const host = panel?.querySelector?.('#eve-map-selection') || panel;
+    if (host) host.innerHTML = '<div class="eve-map-empty">Select a system, constellation or region.</div>';
   }
   async function loadLiveIntel() {
     if (!api()?.get_eve_map_live_intel) return;
@@ -550,7 +642,7 @@
       state.trafficBySystem = new Map(Object.entries(state.live.systems).map(([id, values]) => [Number(id), Number(values.ship_jumps) || 0]));
     } catch (_) { state.live = { systems: {}, state: 'unavailable', updated_at: null }; }
     render();
-    if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId), { loadDetails: false });
+    refreshSelectedLivePanel();
   }
   async function loadCombatMarkers() {
     if (!api()?.get_eve_map_combat_markers) return;
@@ -592,7 +684,7 @@
       indicator.textContent = state.sovereignty.state === 'live' || state.sovereignty.state === 'fresh' ? `${count.toLocaleString('fr-BE')} systems` : state.sovereignty.state === 'stale' ? `stale · ${count.toLocaleString('fr-BE')}` : 'unavailable';
     }
     render();
-    if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId));
+    if (state.panelSelection?.kind === 'system') renderPanelSelection(state.panelSelection, { loadDetails: false });
   }
   const characterPositionKey = positions => positions.map(character => `${character.character_id}:${character.system_id}`).sort().join('|');
   const characterPositionSystemId = characterId => state.characters.find(character => String(character.character_id) === String(characterId))?.system_id ?? null;
@@ -601,7 +693,7 @@
     const previousKey = characterPositionKey(state.characters), selectedCharacterId = state.selectedCharacterId, previousSelectedSystemId = characterPositionSystemId(selectedCharacterId);
     try { const response = await api().get_eve_map_character_positions(); state.characters = response.positions || []; }
     catch (_) { state.characters = []; }
-    if (state.selectedSystemId) showSystem(systemFor(state.selectedSystemId));
+    if (state.panelSelection?.kind === 'system') renderPanelSelection(state.panelSelection, { loadDetails: false });
     const selectedSystemId = characterPositionSystemId(selectedCharacterId);
     if (selectedCharacterId && previousSelectedSystemId != null && selectedSystemId != null && previousSelectedSystemId !== selectedSystemId) focus(systemFor(selectedSystemId));
     return previousKey !== characterPositionKey(state.characters);
@@ -636,26 +728,40 @@
   function clearCharacterSelection() {
     state.selectedCharacterId = null;
   }
-  async function loadRecentKills(systemId) {
+  async function loadRecentKills(selection) {
     if (!api()?.get_eve_map_recent_kills) return;
-    const box = document.querySelector(`.eve-map-latest[data-system-id="${systemId}"]`);
+    const system = selection?.target;
+    if (selection?.kind !== 'system' || !system) return;
+    const key = selectionKey(selection), box = document.querySelector?.(`.eve-map-latest[data-eve-kill-selection="${key}"]`);
     if (!box) return;
     try {
-      const response = await api().get_eve_map_recent_kills(systemId);
-      if (state.selectedSystemId !== systemId) return;
+      const response = await api().get_eve_map_recent_kills(system.id);
+      if (selectionKey(state.panelSelection) !== key) return;
       const kills = response.kills || [];
-      box.innerHTML = kills.length ? `<h4>LATEST KILLS</h4>${kills.map(kill => {
-        const icon = shipIconUrl(kill.ship_type_id);
-        const image = icon ? `<img class="eve-kill-ship-icon" src="${icon}" alt="" loading="lazy" onerror="this.remove()">` : '';
-        return `<a class="eve-kill" data-killmail-id="${Number(kill.killmail_id) || 0}" href="${escapeHtml(kill.url)}" target="_blank" rel="noopener">${image}<span><b>${formatKillDate(kill.time)} · ${Math.round(Number(kill.value || 0) / 1e6)} M ISK</b><small>${escapeHtml(killLocation(kill, systemId))}</small></span></a>`;
-      }).join('')}` : '<small>Derniers kills zKill indisponibles.</small>';
-      bindKillHover(box, systemId);
-    } catch (_) { box.textContent = 'Derniers kills zKill indisponibles.'; }
+      box.innerHTML = kills.length ? `<h4>LATEST KILLS</h4>${killRowsMarkup(kills, selection)}` : '<small>Latest zKill unavailable.</small>';
+      bindKillHover(box);
+    } catch (_) { box.textContent = 'Latest zKill unavailable.'; }
+  }
+  async function loadRecentAreaKills(selection) {
+    if (!api()?.get_eve_map_recent_area_kills || !selection?.target || !['region', 'constellation'].includes(selection.kind)) return;
+    const key = selectionKey(selection), existing = state.areaKillHistory.get(key);
+    if (existing?.loading || (existing?.fetchedAt && Date.now() - existing.fetchedAt < 9 * 60 * 1000)) return;
+    state.areaKillHistory.set(key, { ...(existing || {}), loading: true });
+    refreshSelectedLivePanel();
+    try {
+      const response = await api().get_eve_map_recent_area_kills(selection.kind, selection.target.id);
+      state.areaKillHistory.set(key, { kills: response.kills || [], state: response.state || (response.ok ? 'live' : 'unavailable'), fetchedAt: Date.now(), loading: false });
+    } catch (_) {
+      state.areaKillHistory.set(key, { kills: existing?.kills || [], state: 'unavailable', fetchedAt: Date.now(), loading: false });
+    }
+    if (selectionKey(state.panelSelection) === key) refreshSelectedLivePanel();
   }
   function ensureKillPopover() {
     if (state.killPopover) return state.killPopover;
     const popover = document.createElement('div');
-    popover.className = 'eve-kill-popover'; popover.setAttribute('role', 'tooltip');
+    popover.className = 'eve-kill-popover'; popover.setAttribute('role', 'dialog'); popover.setAttribute('aria-live', 'polite');
+    popover.addEventListener('pointerenter', () => { if (state.killPopoverHideTimer) clearTimeout(state.killPopoverHideTimer); });
+    popover.addEventListener('pointerleave', () => scheduleKillPopoverHide(state.killHoverKey));
     (document.body || mapWorkspace()).appendChild(popover); state.killPopover = popover;
     return popover;
   }
@@ -666,39 +772,48 @@
     popover.style.left = `${Math.max(8, Math.min(window.innerWidth - width - 8, rect.left - width - 10))}px`;
     popover.style.top = `${Math.max(8, Math.min(window.innerHeight - 120, rect.top - 4))}px`;
   }
-  function hideKillPopover(key) {
-    window.setTimeout(() => {
-      if (state.killHoverKey !== key) return;
-      state.killHoverKey = null;
-      if (state.killPopover) state.killPopover.style.display = 'none';
-    }, 90);
+  function closeKillPopover() {
+    if (state.killPopoverHideTimer) clearTimeout(state.killPopoverHideTimer);
+    state.killPopoverHideTimer = null; state.killHoverKey = null;
+    if (state.killPopover) state.killPopover.style.display = 'none';
   }
+  function scheduleKillPopoverHide(key) {
+    if (!key) return;
+    if (state.killPopoverHideTimer) clearTimeout(state.killPopoverHideTimer);
+    state.killPopoverHideTimer = setTimeout(() => {
+      if (state.killHoverKey !== key) return;
+      closeKillPopover();
+    }, 180);
+  }
+  const isKillPopoverInteractionTarget = (target, popover = state.killPopover) => Boolean(popover?.contains?.(target) || target?.closest?.('.eve-kill'));
   const attackerPopoverMarkup = response => {
     const attackers = response.attackers || [];
     if (!attackers.length) return '<h4>ATTAQUANTS</h4><small>Détails indisponibles.</small>';
     const heading = response.total_attackers > attackers.length ? `ATTAQUANTS · ${attackers.length}/${response.total_attackers}` : `ATTAQUANTS · ${attackers.length}`;
     return `<h4>${heading}</h4>${attackers.map(attacker => {
       const icon = shipIconUrl(attacker.ship_type_id);
-      return `<div class="eve-kill-attacker">${icon ? `<img src="${icon}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span><b>${escapeHtml(attacker.pilot_name || 'Unknown pilot')}</b><small>${escapeHtml(attacker.ship_name || 'Unknown ship')}${attacker.final_blow ? ' · final blow' : ''}</small></span><em>${Number(attacker.damage_done || 0).toLocaleString('fr-BE')}</em></div>`;
+      const name = escapeHtml(attacker.pilot_name || 'Unknown pilot'), profile = escapeHtml(attacker.zkill_url || (attacker.character_id ? `https://zkillboard.com/character/${Number(attacker.character_id)}/` : ''));
+      return `<div class="eve-kill-attacker">${icon ? `<img src="${icon}" alt="" loading="lazy" onerror="this.remove()">` : ''}<span>${profile ? `<a href="${profile}" target="_blank" rel="noopener"><b>${name}</b></a>` : `<b>${name}</b>`}<small>${escapeHtml(attacker.ship_name || 'Unknown ship')}${attacker.final_blow ? ' · final blow' : ''}</small></span><em>${Number(attacker.damage_done || 0).toLocaleString('fr-BE')}</em></div>`;
     }).join('')}`;
   };
-  function bindKillHover(box, systemId) {
-    if (!api()?.get_eve_map_kill_attackers) return;
+  function bindKillHover(box) {
+    if (!api()?.get_eve_map_kill_attackers && !api()?.get_eve_map_kill_attackers_intel) return;
     box.querySelectorAll('.eve-kill[data-killmail-id]').forEach(anchor => {
-      const killmailId = Number(anchor.dataset.killmailId);
-      if (!killmailId) return;
+      const killmailId = Number(anchor.dataset.killmailId), systemId = Number(anchor.dataset.killSystemId);
+      if (!killmailId || !systemId) return;
       const key = `${systemId}:${killmailId}`;
       anchor.addEventListener('pointerenter', async () => {
+        if (state.killPopoverHideTimer) clearTimeout(state.killPopoverHideTimer);
         state.killHoverKey = key;
         positionKillPopover(anchor, '<h4>ATTAQUANTS</h4><small>Chargement…</small>');
         try {
-          const response = await api().get_eve_map_kill_attackers(systemId, killmailId);
+          const response = await (api().get_eve_map_kill_attackers_intel || api().get_eve_map_kill_attackers)(systemId, killmailId);
           if (state.killHoverKey === key) positionKillPopover(anchor, attackerPopoverMarkup(response));
         } catch (_) {
           if (state.killHoverKey === key) positionKillPopover(anchor, '<h4>ATTAQUANTS</h4><small>Détails indisponibles.</small>');
         }
       });
-      anchor.addEventListener('pointerleave', () => hideKillPopover(key));
+      anchor.addEventListener('pointerleave', () => scheduleKillPopoverHide(key));
     });
   }
   function stopGateOverlay() { if (state.linkFrame) cancelAnimationFrame(state.linkFrame); state.linkFrame = null; }
@@ -1017,10 +1132,21 @@
     };
     const selectCandidate = candidate => {
       if (!candidate) return;
-      if (candidate.kind === 'system') onNodeClick(candidate.target);
+      // The expanded canvas target is authoritative.  ForceGraph's own hit area
+      // is deliberately much smaller, so let this path bypass its short event
+      // guard after we have already claimed the click.
+      if (candidate.kind === 'system') onNodeClick(candidate.target, { picker: true });
       else focusArea(candidate.target, candidate.kind);
     };
-    host.addEventListener('pointerdown', event => { state.pointer = { x: event.clientX, y: event.clientY, moved: false }; }, true);
+    host.addEventListener('pointerdown', event => {
+      const leftButton = (event.button ?? 0) === 0;
+      const candidate = leftButton ? candidateAtEvent(event) : null;
+      state.pointer = { x: event.clientX, y: event.clientY, moved: false, button: event.button ?? 0, candidate };
+      // ForceGraph receives a background pointer event before its DOM click.
+      // Claim an expanded system/label target here so that event cannot clear
+      // the selection panel between pointerdown and our click handler.
+      if (candidate) state.suppressNodeClickUntil = performance.now() + 700;
+    }, true);
     host.addEventListener('pointermove', event => {
       if (state.pointer && Math.hypot(event.clientX - state.pointer.x, event.clientY - state.pointer.y) > 7) state.pointer.moved = true;
       const now = performance.now(); if (now - lastPick < 60 || !state.graph) return; lastPick = now;
@@ -1035,15 +1161,25 @@
       else { label.style.display = 'none'; host.style.cursor = 'grab'; }
     });
     host.addEventListener('pointerup', () => { if (state.pointer?.moved) state.suppressNodeClickUntil = performance.now() + 180; }, true);
-    host.addEventListener('click', event => { if (state.pointer?.moved) { event.stopImmediatePropagation(); state.pointer = null; return; } const candidate = candidateAtEvent(event); if (!candidate) return; event.stopImmediatePropagation(); selectCandidate(candidate); state.pointer = null; }, true);
-    host.addEventListener('contextmenu', event => { const candidate = candidateAtEvent(event); if (!candidate || candidate.kind !== 'system' || state.pointer?.moved) return; event.preventDefault(); event.stopImmediatePropagation(); setEndpoint('origin', candidate.target); focus(candidate.target); }, true);
+    host.addEventListener('click', event => {
+      const pointer = state.pointer;
+      if (pointer?.moved) { event.stopImmediatePropagation(); state.pointer = null; return; }
+      const candidate = pointer?.candidate || candidateAtEvent(event);
+      if (!candidate) { state.pointer = null; return; }
+      // ForceGraph can emit its own click after the DOM click when a label sits
+      // over a node. Keep the expanded picker authoritative for that brief tail.
+      state.suppressNodeClickUntil = performance.now() + 800;
+      event.preventDefault(); event.stopImmediatePropagation(); selectCandidate(candidate); state.pointer = null;
+    }, true);
+    host.addEventListener('contextmenu', event => { const candidate = candidateAtEvent(event); if (!candidate || candidate.kind !== 'system' || state.pointer?.moved) return; state.suppressNodeClickUntil = performance.now() + 280; event.preventDefault(); event.stopImmediatePropagation(); setEndpoint('origin', candidate.target); focus(candidate.target); }, true);
   }
   function combatMarkerGroups(markers, now = Date.now()) {
     const groups = new Map();
     for (const marker of markers) {
       if (!marker?.system_id || now >= marker.expiresAt) continue;
-      const group = groups.get(marker.system_id) || { system_id: marker.system_id, count: 0, value: 0, latestAt: 0, expiresAt: 0, markers: [] };
+      const group = groups.get(marker.system_id) || { system_id: marker.system_id, count: 0, pod_count: 0, value: 0, latestAt: 0, expiresAt: 0, markers: [] };
       group.count += 1;
+      if (isPodMarker(marker)) group.pod_count += 1;
       group.value += Number(marker.value) || 0;
       group.latestAt = Math.max(group.latestAt, marker.happenedAt || 0);
       group.expiresAt = Math.max(group.expiresAt, marker.expiresAt || 0);
@@ -1059,13 +1195,25 @@
     if (count === 1) return { symbol: '◉', level: 'watch', color: '#f4d07f' };
     return { symbol: '●', level: 'quiet', color: '#88a7b2' };
   }
-  const combatGroupFor = (systemId, now = Date.now()) => combatMarkerGroups(state.combatMarkers.values(), now).find(group => Number(group.system_id) === Number(systemId)) || { system_id: systemId, count: 0, value: 0, markers: [] };
+  function combatActivityForDanger(score) {
+    if (score >= 100) return { symbol: '💀', level: 'critical', color: '#ff4867' };
+    if (score >= 75) return { symbol: '🔥', level: 'hot', color: '#ff7652' };
+    if (score >= 50) return { symbol: '⚠', level: 'warning', color: '#ffb34e' };
+    if (score >= 20) return { symbol: '◉', level: 'watch', color: '#f4d07f' };
+    return { symbol: '●', level: 'quiet', color: '#88a7b2' };
+  }
+  const combatGroupFor = (systemId, now = Date.now()) => combatMarkerGroups(state.combatMarkers.values(), now).find(group => Number(group.system_id) === Number(systemId)) || { system_id: systemId, count: 0, pod_count: 0, value: 0, markers: [] };
+  const combatMarkerLabel = (group, activity = combatActivityForDanger(combatDangerScore(group))) => {
+    if (group.pod_count && group.pod_count === group.count) return `🥚 ${group.pod_count}`;
+    return `${activity.symbol} ${group.count}${group.pod_count ? superscriptNumber(group.pod_count) : ''}`;
+  };
   const combatAge = (happenedAt, now = Date.now()) => `${Math.max(0, Math.floor((now - happenedAt) / 60))}m`;
   const combatIsk = value => value >= 1e9 ? `${(value / 1e9).toFixed(2)} B` : value >= 1e6 ? `${Math.round(value / 1e6)} M` : `${Math.round(value / 1e3)} k`;
   function combatHoverMarkup(system, now = Date.now()) {
-    const group = combatGroupFor(system.id, now), activity = combatActivity(group.count);
+    const group = combatGroupFor(system.id, now), activity = combatActivityForDanger(combatDangerScore(group));
     const kills = group.markers.slice(0, 5).map(marker => `<span>${combatAge(marker.happenedAt, now)}&nbsp; ${escapeHtml(marker.victim_ship_name || (marker.victim_ship_type_id ? `Ship #${marker.victim_ship_type_id}` : 'Vaisseau inconnu'))}<small>${Number(marker.attacker_count) || 0} attaquant(s)</small></span>`).join('');
-    return `<b>${escapeHtml(system.name)} <small>${system.security.toFixed(2)}</small></b><hr><strong style="color:${activity.color}">${activity.symbol} ${group.count} kill${group.count === 1 ? '' : 's'} / 5 min</strong>${group.count ? `<em>💰 ${combatIsk(group.value)} ISK détruits</em><div class="eve-map-hover-kills">${kills}</div>` : ''}`;
+    const podText = group.pod_count ? ` · 🥚 ${group.pod_count} pod${group.pod_count === 1 ? '' : 's'}` : '';
+    return `<b>${escapeHtml(system.name)} <small>${system.security.toFixed(2)}</small></b><hr><strong style="color:${activity.color}">${combatMarkerLabel(group, activity)} kill${group.count === 1 ? '' : 's'} / 30 min${podText}</strong>${group.count ? `<em>💰 ${combatIsk(group.value)} ISK détruits</em><div class="eve-map-hover-kills">${kills}</div>` : ''}`;
   }
   function drawCombatMarkers(context, camera, width, height, now = Date.now()) {
     for (const [key, marker] of state.combatMarkers) {
@@ -1077,7 +1225,7 @@
       const point = projectVisible(node, camera, width, height);
       if (!point) continue;
       const life = Math.max(0, Math.min(1, (group.expiresAt - now) / COMBAT_MARKER_TTL_MS));
-      const activity = combatActivity(group.count);
+      const activity = combatActivityForDanger(combatDangerScore(group));
       const pulse = .5 + .5 * Math.sin(now / 560 + Number(group.system_id) % 31);
       const underlineWidth = (group.count >= 2 ? 24 : 14) + Math.min(group.count, 4) * 3;
       // Keep the alert clear of the node, character indicators and reticle.
@@ -1090,7 +1238,7 @@
       context.lineWidth = group.count >= 2 ? 2.2 : 1.45; context.stroke();
       if (group.count >= 1) {
         context.font = '700 12px system-ui, sans-serif'; context.textAlign = 'center'; context.textBaseline = 'middle';
-        context.fillStyle = activity.color; context.globalAlpha = .72 + pulse * .24; context.fillText(`${activity.symbol} ${group.count}`, point.x, alertY);
+        context.fillStyle = activity.color; context.globalAlpha = .72 + pulse * .24; context.fillText(combatMarkerLabel(group, activity), point.x, alertY);
       }
     }
     context.globalAlpha = 1;
@@ -1303,7 +1451,8 @@
     const renderedSystem = state.nodesById?.get(system.id) || system;
     if (!['x', 'y', 'z'].every(axis => Number.isFinite(renderedSystem[axis]))) return;
     state.areaFocus = null; render(); showSystem(renderedSystem);
-    state.graph.cameraPosition(cameraPose(renderedSystem, 42), renderedSystem, 700);
+    const controls = typeof state.graph.controls === 'function' ? state.graph.controls() : null;
+    state.graph.cameraPosition(cameraFocusPosition(renderedSystem, state.graph.camera?.(), controls, 42), renderedSystem, 700);
   }
   // One deliberate, overhead New Eden frame. Home, search, and right-click
   // focus all use this vector so navigation translates over the map instead
@@ -1315,6 +1464,18 @@
     return { x: target.x + direction.x / magnitude * distance, y: target.y + direction.y / magnitude * distance, z: target.z + direction.z / magnitude * distance };
   };
   function cameraPose(target, distance) { return newEdenCameraPose(target, distance); }
+  function cameraFocusPosition(target, camera, controls, fallbackDistance = 42) {
+    const position = camera?.position, currentTarget = controls?.target;
+    const valid = point => point && ['x', 'y', 'z'].every(axis => Number.isFinite(point[axis]));
+    if (valid(target) && valid(position) && valid(currentTarget)) {
+      // Translate the complete camera rig to the new node.  The offset between
+      // the camera and its orbit target is unchanged, hence repeated picks do
+      // not snap the view back to a fixed overhead angle.
+      const offset = { x: position.x - currentTarget.x, y: position.y - currentTarget.y, z: position.z - currentTarget.z };
+      if (Math.hypot(offset.x, offset.y, offset.z) > .001) return { x: target.x + offset.x, y: target.y + offset.y, z: target.z + offset.z };
+    }
+    return cameraPose(target, fallbackDistance);
+  }
   function galaxyShot(nodes, anchor = null) {
     const bounds = nodes.reduce((result, node) => {
       ['x', 'y', 'z'].forEach(axis => { result.min[axis] = Math.min(result.min[axis], node[axis]); result.max[axis] = Math.max(result.max[axis], node[axis]); });
@@ -1332,24 +1493,58 @@
     state.areaFocus = { area, kind }; render();
     const distance = Math.max(kind === 'region' ? 560 : 150, area.span * (kind === 'region' ? 1.55 : 1.4));
     state.graph.cameraPosition(cameraPose(area, distance), area, 850);
-    const panel = document.getElementById('eve-map-panel'); panel.querySelector('.eve-map-empty')?.remove(); panel.querySelector('.eve-map-system')?.remove(); panel.querySelector('.eve-map-area')?.remove();
-    panel.insertAdjacentHTML('afterbegin', `<div class="eve-map-area"><h3>${escapeHtml(area.name)}</h3><p>${kind === 'region' ? 'Région' : 'Constellation'} · ${area.count} systèmes · focus actif</p></div>`);
+    renderPanelSelection({ kind, target: area });
   }
   function systemFor(id) { return state.data?.systems.find(system => String(system.id) === String(id)); }
+  function togglePanelSection(key) {
+    if (!Object.prototype.hasOwnProperty.call(state.panelSections, key)) return false;
+    state.panelSections[key] = !state.panelSections[key];
+    const section = document.querySelector?.(`[data-eve-panel-section="${key}"]`);
+    section?.classList?.[state.panelSections[key] ? 'add' : 'remove']('is-open');
+    const title = section?.querySelector?.('.eve-map-section-title');
+    if (title) { title.setAttribute('aria-expanded', String(state.panelSections[key])); const chevron = title.querySelector('b'); if (chevron) chevron.textContent = state.panelSections[key] ? '▲' : '▼'; }
+    return state.panelSections[key];
+  }
+  function setPanelCollapsed(collapsed) {
+    state.panelCollapsed = Boolean(collapsed); closeKillPopover();
+    const content = document.getElementById('eve-map-content'), panel = document.getElementById('eve-map-panel'), button = document.getElementById('eve-map-panel-toggle');
+    content?.classList?.[state.panelCollapsed ? 'add' : 'remove']('eve-map-panel-collapsed');
+    panel?.setAttribute?.('aria-hidden', String(state.panelCollapsed));
+    if (button) {
+      const action = state.panelCollapsed ? 'Show intel panel' : 'Hide intel panel';
+      button.setAttribute('aria-expanded', String(!state.panelCollapsed));
+      button.setAttribute('aria-label', action);
+      button.title = action;
+    }
+    return state.panelCollapsed;
+  }
   function setEndpoint(kind, system) {
     const rawSystem = systemFor(system?.id || system);
     if (!rawSystem) return;
-    if (kind === 'origin') { state.originId = rawSystem.id; document.getElementById('eve-route-from').value = rawSystem.name; }
-    else { state.destinationId = rawSystem.id; document.getElementById('eve-route-to').value = rawSystem.name; }
+    if (kind === 'origin') { state.originId = rawSystem.id; const input = document.getElementById('eve-route-from'); if (input) input.value = rawSystem.name; }
+    else { state.destinationId = rawSystem.id; const input = document.getElementById('eve-route-to'); if (input) input.value = rawSystem.name; }
     if (state.originId && state.destinationId) updateRoute();
+  }
+  function traceRouteFromInputs() {
+    const systems = state.data?.systems || [], fromValue = document.getElementById('eve-route-from')?.value?.trim() || '', toValue = document.getElementById('eve-route-to')?.value?.trim() || '';
+    const resolve = value => systems.find(system => String(system.id) === value || system.name.toLowerCase() === value.toLowerCase());
+    const from = resolve(fromValue), to = resolve(toValue), result = document.getElementById('eve-route-result');
+    if (!from || !to) { if (result) result.textContent = 'Systems not found.'; return false; }
+    state.originId = from.id; state.destinationId = to.id; updateRoute(); return true;
+  }
+  function clearRoute() {
+    state.originId = null; state.destinationId = null; state.route = null;
+    const from = document.getElementById('eve-route-from'), to = document.getElementById('eve-route-to'), result = document.getElementById('eve-route-result');
+    if (from) from.value = ''; if (to) to.value = ''; if (result) result.textContent = '';
+    return true;
   }
   async function updateRoute(safeOnly = false) {
     const result = document.getElementById('eve-route-result');
     const from = systemFor(state.originId), to = systemFor(state.destinationId);
     if (!from || !to) return;
-    result.textContent = 'Calcul de route…'; state.route = null;
-    const response = await api().find_eve_route(from.id, to.id, safeOnly ? .5 : null), route = response.data;
-    if (!route || route.error) { result.textContent = safeOnly ? 'Aucune route entièrement high-sec.' : 'Aucun itinéraire stargate.'; return; }
+    result.textContent = 'Calculating route…'; state.route = null;
+    const response = await api().find_eve_route(from.id, to.id, safeOnly ? 'high' : null), route = response.data;
+    if (!route || route.error) { result.textContent = safeOnly ? 'No fully high-sec route.' : 'No stargate route found.'; return; }
     const legs = new Map(route.systems.slice(1).map((target, index) => {
       const source = route.systems[index]; return [gateKey(source, target), { source, target, index }];
     }));
@@ -1364,11 +1559,11 @@
     }).filter(Boolean).join('<span class="eve-route-square-join" aria-hidden="true"></span>');
     const routeIntel = route.systems.map(systemFor).filter(Boolean).map(liveFor), totalJumps = routeIntel.reduce((sum, live) => sum + live.ship_jumps, 0), shipKills = routeIntel.reduce((sum, live) => sum + live.ship_kills, 0), podKills = routeIntel.reduce((sum, live) => sum + live.pod_kills, 0), riskyIntel = routeIntel.filter(live => live.danger >= 50).length, dangerous = routeIntel.filter(live => live.danger >= 75).length;
     const traffic = totalJumps >= 5000 ? 'HIGH' : totalJumps >= 500 ? 'MEDIUM' : 'LOW';
-    const intelSummary = state.live.state === 'unavailable' ? '<div class="eve-live-state">Live Intel indisponible</div>' : `<div class="eve-route-intel"><b>Traffic: ${traffic}</b><span>Danger: ${riskyIntel} risky · ${dangerous} dangerous</span><span>Ship kills: ${shipKills} · Pod kills: ${podKills}</span></div>`;
-    result.innerHTML = `<div class="eve-route-summary">${route.jumps} saut${route.jumps === 1 ? '' : 's'} · ${escapeHtml(from.name)} → ${escapeHtml(to.name)}</div>${intelSummary}${risky && !safeOnly ? '<div class="eve-route-warning">⚠ Passage sous 0,6 <button class="btn mini" onclick="useEveMapSafeRoute()">Route sûre high-sec</button></div>' : safeOnly ? '<div class="eve-route-safe">✓ Route high-sec (≥ 0,5)</div>' : ''}<div class="eve-route-steps" aria-label="Systèmes traversés">${steps}</div>`;
+    const intelSummary = state.live.state === 'unavailable' ? '<div class="eve-live-state">Live Intel unavailable</div>' : `<div class="eve-route-intel"><b>Traffic: ${traffic}</b><span>Danger: ${riskyIntel} risky · ${dangerous} dangerous</span><span>Ship kills: ${shipKills} · Pod kills: ${podKills}</span></div>`;
+    result.innerHTML = `<div class="eve-route-summary">${route.jumps} jump${route.jumps === 1 ? '' : 's'} · ${escapeHtml(from.name)} → ${escapeHtml(to.name)}</div>${intelSummary}${risky && !safeOnly ? '<div class="eve-route-warning">⚠ Route drops below 0.6 <button class="btn mini" onclick="useEveMapSafeRoute()">High-sec route</button></div>' : safeOnly ? '<div class="eve-route-safe">✓ High-sec route (displayed ≥ 0.5)</div>' : ''}<div class="eve-route-steps" aria-label="Systems on route">${steps}</div>`;
   }
-  function onNodeClick(system) {
-    if (performance.now() < state.suppressNodeClickUntil) return;
+  function onNodeClick(system, options = {}) {
+    if (!options.picker && performance.now() < state.suppressNodeClickUntil) return;
     const now = performance.now(), previous = state.lastNodeClick;
     if (previous?.id === system?.id && now - previous.at < 360) { setEndpoint('destination', system); state.lastNodeClick = null; return; }
     state.lastNodeClick = { id: system?.id, at: now }; focus(system);
@@ -1387,7 +1582,7 @@
       object.position.set(coords.x, coords.y, coords.z);
       object.scale.setScalar(cappedSystemObjectScale(object, distance, camera, host.clientHeight));
       return true;
-    }).onNodeClick(onNodeClick).onNodeRightClick(node => { setEndpoint('origin', node); focus(node); }).onBackgroundClick(clearSystemSelection).onNodeHover(node => host.style.cursor = node ? 'pointer' : 'grab');
+    }).onNodeClick(onNodeClick).onNodeRightClick(node => { setEndpoint('origin', node); focus(node); }).onBackgroundClick(() => { if (performance.now() >= state.suppressNodeClickUntil) clearSystemSelection(); }).onNodeHover(node => host.style.cursor = node ? 'pointer' : 'grab');
     const resizeMap = () => { if (!host.clientWidth || !host.clientHeight) return; graph.width(host.clientWidth).height(host.clientHeight); state.lastLinkDraw = 0; };
     state.resizeMap = resizeMap; resizeMap();
     if (window.ResizeObserver) { state.resizeObserver?.disconnect(); state.resizeObserver = new window.ResizeObserver(resizeMap); state.resizeObserver.observe(host); }
@@ -1403,6 +1598,11 @@
   window.closeEveMap = function () { const workspace = mapWorkspace(); workspace?.setAttribute('aria-hidden', 'true'); state.visible = false; stopCharacterPositionTracking(); stopCombatStream(); stopGateOverlay(); stopSkyFrame(); state.graph && state.graph.pauseAnimation(); };
   window.setEveMapOrigin = id => setEndpoint('origin', id);
   window.setEveMapDestination = id => setEndpoint('destination', id);
+  window.traceEveMapRoute = traceRouteFromInputs;
+  window.clearEveMapRoute = clearRoute;
+  window.toggleEveMapPanelSection = togglePanelSection;
+  window.toggleEveMapPanel = () => setPanelCollapsed(!state.panelCollapsed);
+  window.openEveMapPanel = () => setPanelCollapsed(false);
   window.useEveMapSafeRoute = () => updateRoute(true);
   window.focusEveMapSystem = id => focus(systemFor(id));
   window.focusEveMapCharacter = id => focusCharacterPosition(id);
@@ -1410,20 +1610,28 @@
   window.refreshEveMapCharacterPositions = () => loadCharacterPositions();
   if (window.__eveMapTest) {
     Object.assign(window.__eveMapTest, {
-      clipSegmentToViewport, projectGateSegment, characterColor, characterMarkerScale, systemObjectScale, combatMarkerGroups, combatActivity,
+      clipSegmentToViewport, projectGateSegment, security, characterColor, characterMarkerScale, systemObjectScale, combatMarkerGroups, combatActivity,
       estimateGateTraffic, estimateGateFlows, trafficParticlePlan, trafficPacketOffsets, trafficParticleSpeed, trafficParticleProgress, trafficSegmentProgress, trafficParticleVisualStyle,
-      shipIconUrl, formatKillDate, killLocation, attackerPopoverMarkup,
+      shipIconUrl, formatKillDate, killLocation, panelKillLocation, selectionSystems, aggregateLiveIntel, recentAreaKills, mergeKillRows, killRowsMarkup, panelSectionMarkup, selectionInfoMarkup, selectionIntelMarkup, isKillPopoverInteractionTarget, attackerPopoverMarkup,
       influenceOverlayRadius, influenceOverlayStyle, influenceLayers, cappedSystemObjectScale, updateSystemScreenScales,
-      displayNodes, cameraPose, galaxyShot, visibleLabelGroup, labelsCanOverlap, mapLabelLayers, mapLabelPlacement, isAreaMember, focusNodeColor, characterRingSegments, liveWithCombat, combatDangerScore, characterPositionTrackingInterval, characterPositionSystemId, visibleCharacterIds, selectionReticleStyle, systemSelectionRadius,
+      displayNodes, cameraPose, cameraFocusPosition, galaxyShot, visibleLabelGroup, labelsCanOverlap, mapLabelLayers, mapLabelPlacement, isAreaMember, focusNodeColor, characterRingSegments, liveWithCombat, combatDangerScore, combatMarkerLabel, combatActivityForDanger, isPodMarker, characterPositionTrackingInterval, characterPositionSystemId, visibleCharacterIds, selectionReticleStyle, systemSelectionRadius,
       buildSkyStars, skyCameraKey, skyTextureDirection, worldSkyDirection, skyRayDirection, skyFieldDimensions,
-      nebulaColor, skyTextureCoordinates, skyTexturePacked, skyGpuFragmentShader: SKY_GPU_FRAGMENT_SHADER, stabilizeOrbitControls, projectSkyDirection
+      nebulaColor, skyTextureCoordinates, skyTexturePacked, skyGpuFragmentShader: SKY_GPU_FRAGMENT_SHADER, stabilizeOrbitControls, projectSkyDirection, togglePanelSection, setPanelCollapsed, clearRoute
     });
   }
   function bindControls() {
     document.querySelectorAll('[data-eve-security], #eve-map-gates, #eve-map-traffic, #eve-map-danger, #eve-map-sovereignty, #eve-map-empires').forEach(input => input.addEventListener('change', () => { const key = input.dataset.eveSecurity || input.id.replace('eve-map-', ''); state.filters[key] = input.checked; if (key === 'sovereignty') { const indicator = document.getElementById('eve-map-sovereignty-state'); if (input.checked) loadSovereignty(); else if (indicator) indicator.textContent = 'off'; } render(); }));
-    document.getElementById('eve-map-fit').addEventListener('click', () => focusHome());
-    document.getElementById('eve-map-search').addEventListener('input', event => { const query = event.target.value.trim().toLowerCase(); const box = document.getElementById('eve-map-results'); box.innerHTML = ''; if (!query || !state.data) return; state.data.systems.filter(s => s.name.toLowerCase().includes(query)).slice(0, 8).forEach(s => { const button = document.createElement('button'); button.textContent = `${s.name} · ${s.region}`; button.onclick = () => { box.innerHTML = ''; focus(s); }; box.appendChild(button); }); });
-    document.getElementById('eve-map-route').addEventListener('click', () => { const systems = state.data && state.data.systems || []; const resolve = value => systems.find(s => String(s.id) === value.trim() || s.name.toLowerCase() === value.trim().toLowerCase()); const from = resolve(document.getElementById('eve-route-from').value), to = resolve(document.getElementById('eve-route-to').value), result = document.getElementById('eve-route-result'); if (!from || !to) { result.textContent = 'Systèmes introuvables.'; return; } state.originId = from.id; state.destinationId = to.id; updateRoute(); });
+    document.getElementById('eve-map-fit')?.addEventListener('click', () => focusHome());
+    document.getElementById('eve-map-search')?.addEventListener('input', event => { const query = event.target.value.trim().toLowerCase(); const box = document.getElementById('eve-map-results'); box.innerHTML = ''; if (!query || !state.data) return; state.data.systems.filter(s => s.name.toLowerCase().includes(query)).slice(0, 8).forEach(s => { const button = document.createElement('button'); button.textContent = `${s.name} · ${s.region}`; button.onclick = () => { box.innerHTML = ''; focus(s); }; box.appendChild(button); }); });
+    document.getElementById('eve-map-route')?.addEventListener('click', traceRouteFromInputs);
+    document.getElementById('eve-map-route-clear')?.addEventListener('click', clearRoute);
+    document.getElementById('eve-map-panel-toggle')?.addEventListener('click', () => setPanelCollapsed(!state.panelCollapsed));
+    document.addEventListener?.('pointerdown', event => {
+      const target = event.target, popover = state.killPopover;
+      if (!popover || popover.style.display === 'none') return;
+      if (isKillPopoverInteractionTarget(target, popover)) return;
+      closeKillPopover();
+    });
   }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bindControls);
   else bindControls();
