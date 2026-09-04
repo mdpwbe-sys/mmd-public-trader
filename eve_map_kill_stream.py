@@ -20,7 +20,10 @@ SEQUENCE_DELAY_SECONDS = 0.14  # safely below R2Z2's documented 15 req/s limit
 BACKOFF_INITIAL_SECONDS = 2
 BACKOFF_MAX_SECONDS = 30
 MAX_STORED_ATTACKERS = 20
-USER_AGENT = os.environ.get("MMD_MAP_USER_AGENT", "EVE-Market-Manager/1.0 (tactical combat stream)")
+USER_AGENT = os.environ.get(
+    "MMD_MAP_USER_AGENT",
+    "EVE-Market-Manager/1.0 (https://github.com/mdpwbe-sys/mmd-public-trader; tactical combat stream)",
+)
 
 
 def _kill_time(value: object) -> float | None:

@@ -15,6 +15,8 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+from eve_map_runtime import esi, esi_auth, map_cache_path, sso
+
 
 ESI_BASE = "https://esi.evetech.net/latest"
 LIVE_TTL_SECONDS = 600
@@ -25,18 +27,12 @@ ZKILL_AREA_TTL_SECONDS = 10 * 60
 ENTITY_NAME_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_KILL_ATTACKERS = 20
 ZKILL_USER_AGENT = os.environ.get(
-    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd)"
+    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd-public-trader)"
 )
 
 
 def default_cache_path() -> Path:
-    try:
-        from platform_state import state_path
-        return Path(state_path("cache", "eve_map_intel.json"))
-    except ImportError:
-        pass
-    appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
-    return appdata / "MMD-Trader" / "cache" / "eve_map_intel.json"
+    return map_cache_path()
 
 
 def _stream_kills(system_id: int) -> list[dict]:
@@ -124,7 +120,6 @@ class EveMapIntelService:
     def _fetch_esi(self, endpoint: str):
         # Reuse the application's public ESI transport (ETag, CCP error-limit
         # handling, retry/backoff and its own stale snapshot behaviour).
-        import mmd_esi
         if endpoint == "/sovereignty/map/":
             # This newer public route returns 404 when the app-wide historical
             # X-Compatibility-Date is sent.  This service owns a 15-minute
@@ -135,8 +130,8 @@ class EveMapIntelService:
             )
             with urllib.request.urlopen(request, timeout=8) as response:
                 return json.loads(response.read().decode("utf-8"))
-        mmd_esi._load_cache()
-        data, state = mmd_esi._get(f"{ESI_BASE}{endpoint}", timeout=8, include_cache_state=True)
+        esi._load_cache()
+        data, state = esi._get(f"{ESI_BASE}{endpoint}", timeout=8, include_cache_state=True)
         if data is None:
             raise RuntimeError(f"ESI {state}")
         return data
@@ -427,14 +422,12 @@ class EveMapIntelService:
             now = self.now()
             if self._character_positions is not None and now - self._character_positions_at < 15:
                 return {"ok": True, "positions": self._character_positions, "state": "fresh"}
-            import mmd_esi_auth
-            import mmd_sso
             positions, errors = [], []
-            for character in mmd_sso.connected_chars():
+            for character in sso.connected_chars():
                 character_id = character["id"]
-                if not mmd_sso.character_capabilities(character_id).get("character_location"):
+                if not sso.character_capabilities(character_id).get("character_location"):
                     continue
-                response = mmd_esi_auth.request_json("GET", f"/latest/characters/{character_id}/location/", character_id, timeout=8, max_attempts=2)
+                response = esi_auth.request_json("GET", f"/latest/characters/{character_id}/location/", character_id, timeout=8, max_attempts=2)
                 system_id = response.data.get("solar_system_id") if response.ok and isinstance(response.data, dict) else None
                 if system_id:
                     positions.append({"character_id": character_id, "name": character["name"], "system_id": int(system_id)})

@@ -760,12 +760,12 @@
 
   function startRefreshCooldown(lastTimestampMs) {
     const lastTime = lastTimestampMs || Date.now();
-    localStorage.setItem('evernus_last_refresh_time', String(lastTime));
+    localStorage.setItem('mmd_last_refresh_time', String(lastTime));
 
     if (window.__cooldownTimerIv) clearInterval(window.__cooldownTimerIv);
 
     function tick() {
-      const savedTime = parseInt(localStorage.getItem('evernus_last_refresh_time') || '0', 10);
+      const savedTime = parseInt(localStorage.getItem('mmd_last_refresh_time') || '0', 10);
       if (!savedTime) return;
 
       const elapsedSec = Math.floor((Date.now() - savedTime) / 1000);
@@ -798,7 +798,7 @@
   }
 
   function initRefreshCooldown() {
-    const savedTime = parseInt(localStorage.getItem('evernus_last_refresh_time') || '0', 10);
+    const savedTime = parseInt(localStorage.getItem('mmd_last_refresh_time') || '0', 10);
     if (savedTime) {
       const elapsedSec = Math.floor((Date.now() - savedTime) / 1000);
       if (elapsedSec < COOLDOWN_DURATION_SEC) {
@@ -808,7 +808,7 @@
   }
 
   function scan() {
-    const savedTime = parseInt(localStorage.getItem('evernus_last_refresh_time') || '0', 10);
+    const savedTime = parseInt(localStorage.getItem('mmd_last_refresh_time') || '0', 10);
     if (savedTime) {
       const elapsedSec = Math.floor((Date.now() - savedTime) / 1000);
       if (elapsedSec < COOLDOWN_DURATION_SEC) {
@@ -1090,7 +1090,7 @@
   window.__sparklineStore = {};
   window.__updateCountsByChar = {};
   window.__activeUpdateCharIds = [];
-  const SPARKLINE_SCHEMA = 2, SPARKLINE_LOCAL_KEY = 'evernus_order_counts_v2';
+  const SPARKLINE_SCHEMA = 2, SPARKLINE_LOCAL_KEY = 'mmd_order_counts_v2';
 
   function sparklineFreshness(payload) {
     if (!payload || payload.version !== SPARKLINE_SCHEMA) return -1;

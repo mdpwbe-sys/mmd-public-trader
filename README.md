@@ -24,7 +24,6 @@ The New Eden workspace combines CCP SDE topology with optional ESI and zKillboar
 - **Trend and duplicate views**: Track update workloads and self-competing orders with per-character color indicators.
 - **Margin and batch tools**: Calculate net margins with station-aware broker fees and accounting taxes.
 - **Resilient local storage**: SQLite WAL transactions, retry handling, single-instance lock and heartbeat.
-- **Obsidian export**: Write readable trade journals without blocking the application.
 - **New Eden 3D map**: Fixed CCP SDE coordinates, security filters, search, real stargates, safe routing and character positions.
 - **Live tactical overlays**: ESI traffic and danger, R2Z2/zKillboard combat markers retained on-map for 30 minutes, sovereignty and empire influence layers. The combat stream is active only while the map is open.
 - **Local analyser**: Detect a copied EVE Local roster from the Windows clipboard and open a compact pilot risk summary, independently from the trading workflow.
@@ -57,14 +56,14 @@ See [the New Eden map documentation](docs/NEW_EDEN_MAP.md) for the map data and 
    ```env
    CLIENT_ID=your_client_id_here
    CLIENT_SECRET=your_client_secret_here
-   CALLBACK_URL=http://127.0.0.1:8765/callback
+   CALLBACK_URL=http://127.0.0.1:8766/callback
    ```
 
 4. **Launch the application**:
    ```bash
-   python evernus_gui.py
+   python mmd_gui.py
    ```
-   *or double-click `evernus_gui.bat`.*
+   *or double-click `mmd_gui.bat`.*
 
 ---
 
@@ -82,18 +81,20 @@ See [the New Eden map documentation](docs/NEW_EDEN_MAP.md) for the map data and 
    - `esi-markets.read_corporation_orders.v1`
    - `esi-wallet.read_corporation_wallets.v1`
    - `esi-assets.read_assets.v1`
+   - `esi-assets.read_corporation_assets.v1`
    - `esi-contracts.read_character_contracts.v1`
    - `esi-contracts.read_corporation_contracts.v1`
    - `esi-corporations.read_divisions.v1`
+   - `esi-characters.read_blueprints.v1`
    - `esi-characters.read_standings.v1`
    - `esi-skills.read_skills.v1`
    - `esi-location.read_location.v1` *(requested by the current MMD SSO flow; used only for active character positions on the map)*
-5. Set **Callback URL** to `http://127.0.0.1:8765/callback`.
+5. Set **Callback URL** to `http://127.0.0.1:8766/callback`.
 6. Copy your `Client ID` and `Secret Key` into your local `.env` file.
 
-Station names, regions, and item names use the local Evernus SDE when present.
-On a clean VM, MMD resolves them through read-only ESI routes and stores only
-non-sensitive caches in `app_data.db`; copying an existing `eve.db` is optional.
+Station names, regions, and item names use the bundled light SDE when present.
+On a clean installation, MMD resolves them through read-only ESI routes and stores only
+non-sensitive caches under `%APPDATA%/MMD-Trader`; copying an existing `eve.db` is optional.
 Large inventories are resolved progressively (up to 40 new market/type pairs per refresh).
 
 ---
@@ -113,4 +114,4 @@ python test_ticks.py
 
 Distributed under the **MIT License**. See `LICENSE` for details.
 
-*EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights are reserved worldwide. All other trademarks are the property of their respective owners. Thanks to Elinor and Evernus creators for their inspiration.*
+*EVE Online and the EVE logo are the registered trademarks of CCP hf. All rights are reserved worldwide. All other trademarks are the property of their respective owners.*

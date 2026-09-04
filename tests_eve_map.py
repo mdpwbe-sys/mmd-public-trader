@@ -100,7 +100,7 @@ class EveMapIntelServiceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             service = EveMapIntelService(Path(directory) / "intel.json")
-            with patch("eve_map_intel_service.urllib.request.urlopen", return_value=Response()) as fetch, patch("mmd_esi._get", side_effect=AssertionError("legacy compatibility transport must not serve sovereignty")):
+            with patch("eve_map_intel_service.urllib.request.urlopen", return_value=Response()) as fetch, patch("eve_map_runtime.esi._get", side_effect=AssertionError("legacy compatibility transport must not serve sovereignty")):
                 rows = service._fetch_esi("/sovereignty/map/")
 
         self.assertEqual(rows[0]["alliance_id"], 99000001)
