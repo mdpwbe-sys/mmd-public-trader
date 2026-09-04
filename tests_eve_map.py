@@ -154,6 +154,92 @@ class EveMapIntelServiceTests(unittest.TestCase):
             self.assertEqual(detail["attackers"][0]["ship_name"], "Rifter")
             self.assertTrue(detail["attackers"][0]["final_blow"])
 
+    def test_recent_kills_merge_live_stream_with_cached_zkill_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "intel.json"
+            live = [{
+                "killmail_id": 42, "system_id": 30000142, "happened_at": 2_000,
+                "killmail_time": "1970-01-01T00:33:20Z", "value": 612000000,
+                "victim_ship_type_id": 670, "attackers": [], "attacker_count": 0,
+            }]
+            service = EveMapIntelService(path, now=lambda: 2_100, live_kills=lambda system_id: live if system_id == 30000142 else [])
+            service._write_cache({"zkill": {"30000142": {"updated_at": 2_000, "kills": [
+                {"killmail_id": 42, "time": "1970-01-01T00:30:00Z", "value": 1, "attackers": [], "attacker_count": 0},
+                {"killmail_id": 41, "time": "1970-01-01T00:20:00Z", "value": 2, "attackers": [], "attacker_count": 0},
+            ]}}})
+            merged = service.get_recent_kills(30000142)
+            self.assertEqual([42, 41], [kill["killmail_id"] for kill in merged["kills"]])
+            self.assertEqual(612000000, merged["kills"][0]["value"])
+
+    def test_live_kill_attackers_are_available_without_a_zkill_cache_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            live = [{
+                "killmail_id": 77, "time": "1970-01-01T00:33:20Z", "attackers": [{
+                    "character_id": 9001, "ship_type_id": 587, "final_blow": True, "damage_done": 1234,
+                }], "attacker_count": 1,
+            }]
+            service = EveMapIntelService(
+                Path(directory) / "intel.json", now=lambda: 2_100,
+                live_kills=lambda system_id: live if system_id == 30000142 else [],
+                fetch_names=lambda ids: [
+                    {"id": 9001, "name": "Hunter", "category": "character"},
+                    {"id": 587, "name": "Rifter", "category": "inventory_type"},
+                ],
+            )
+            detail = service.get_kill_attackers(30000142, 77)
+            self.assertTrue(detail["ok"])
+            self.assertEqual("Hunter", detail["attackers"][0]["pilot_name"])
+            self.assertEqual("Rifter", detail["attackers"][0]["ship_name"])
+
+    def test_hovered_attacker_intel_reuses_the_local_analyser_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = EveMapIntelService(
+                Path(directory) / "intel.json", now=lambda: 2_100,
+                live_kills=lambda _: [{
+                    "killmail_id": 77, "attackers": [{"character_id": 9001, "ship_type_id": 587}], "attacker_count": 1,
+                }],
+                fetch_names=lambda _: [
+                    {"id": 9001, "name": "Hunter", "category": "character"},
+                    {"id": 587, "name": "Rifter", "category": "inventory_type"},
+                ],
+            )
+            class Analyzer:
+                def analyze_identities(self, identities):
+                    self.identities = identities
+                    return {"state": "ready", "pilots": [{"character_id": 9001, "danger": 81, "snuggly": 19, "band": "dangerous", "zkill_url": "https://zkillboard.com/character/9001/scanalyzer/"}]}
+            analyzer = Analyzer()
+            with patch("eve_local_analyzer.LocalAnalyzer", return_value=analyzer):
+                detail = service.get_kill_attackers_intel(30000142, 77)
+            self.assertEqual(analyzer.identities, [(9001, "Hunter")])
+            self.assertEqual(detail["attackers"][0]["danger"], 81)
+            self.assertEqual(detail["attackers"][0]["zkill_url"], "https://zkillboard.com/character/9001/scanalyzer/")
+
+    def test_hovered_victim_has_ship_identity_and_lazy_profile(self):
+        with tempfile.TemporaryDirectory() as directory:
+            service = EveMapIntelService(
+                Path(directory) / "intel.json", now=lambda: 2_100,
+                live_kills=lambda _: [{
+                    "killmail_id": 78, "ship_type_id": 670, "value": 612000000,
+                    "victim_character_id": 8001, "victim_corporation_id": 9001, "attackers": [],
+                }],
+                fetch_names=lambda _: [
+                    {"id": 8001, "name": "Victim", "category": "character"},
+                    {"id": 9001, "name": "Victim Corp", "category": "corporation"},
+                    {"id": 670, "name": "Capsule", "category": "inventory_type"},
+                ],
+            )
+            class Analyzer:
+                def analyze_identities(self, identities):
+                    self.identities = identities
+                    return {"pilots": [{"character_id": 8001, "danger": 7, "snuggly": 93, "band": "snuggly", "zkill_url": "https://zkillboard.com/character/8001/scanalyzer/"}]}
+            analyzer = Analyzer()
+            with patch("eve_local_analyzer.LocalAnalyzer", return_value=analyzer):
+                detail = service.get_kill_victim_intel(30000142, 78)
+            self.assertEqual(analyzer.identities, [(8001, "Victim")])
+            self.assertEqual(detail["victim"]["ship_name"], "Capsule")
+            self.assertEqual(detail["victim"]["corporation_name"], "Victim Corp")
+            self.assertEqual(detail["victim"]["danger"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()

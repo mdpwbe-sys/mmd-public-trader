@@ -18,7 +18,7 @@ test('search result focuses the rendered node coordinates', async () => {
   const elements = new Map(['eve-map-overlay', 'eve-map-canvas', 'eve-map-panel', 'eve-route-from', 'eve-map-search', 'eve-map-results', 'eve-map-fit', 'eve-map-gates', 'eve-map-traffic', 'eve-map-danger', 'eve-map-character', 'eve-map-route', 'eve-route-to', 'eve-route-result'].map(id => [id, element()]));
   const documentListeners = {};
   const graph = {
-    backgroundColor() { return this; }, graphData(data) { this.nodes = data.nodes; return this; }, nodeId() { return this; }, nodeLabel() { return this; }, nodeColor() { return this; }, nodeVal() { return this; }, nodeRelSize() { return this; }, nodeResolution() { return this; }, nodeOpacity() { return this; }, nodeVisibility() { return this; }, linkVisibility() { return this; }, linkColor() { return this; }, linkOpacity() { return this; }, linkWidth() { return this; }, enableNodeDrag() { return this; }, nodePositionUpdate() { return this; }, onNodeClick() { return this; }, onNodeRightClick() { return this; }, onNodeHover() { return this; }, width(value) { if (value !== undefined) this.widthValue = value; return this; }, height(value) { if (value !== undefined) this.heightValue = value; return this; }, d3Force() { return this; }, cooldownTicks() { return this; }, zoomToFit() {}, resumeAnimation() {}, pauseAnimation() {},
+    backgroundColor() { return this; }, graphData(data) { this.nodes = data.nodes; return this; }, nodeId() { return this; }, nodeLabel() { return this; }, nodeColor() { return this; }, nodeVal() { return this; }, nodeRelSize() { return this; }, nodeResolution() { return this; }, nodeOpacity() { return this; }, nodeVisibility() { return this; }, linkVisibility() { return this; }, linkColor() { return this; }, linkOpacity() { return this; }, linkWidth() { return this; }, enableNodeDrag() { return this; }, nodePositionUpdate() { return this; }, onNodeClick() { return this; }, onNodeRightClick() { return this; }, onBackgroundClick() { return this; }, onNodeHover() { return this; }, width(value) { if (value !== undefined) this.widthValue = value; return this; }, height(value) { if (value !== undefined) this.heightValue = value; return this; }, d3Force() { return this; }, cooldownTicks() { return this; }, zoomToFit() {}, resumeAnimation() {}, pauseAnimation() {},
     cameraPosition(position, target) { this.lastCamera = { position, target }; },
   };
   const dataset = { systems: [
@@ -49,9 +49,11 @@ test('search result focuses the rendered node coordinates', async () => {
   assert.match(elements.get('eve-map-panel').innerHTML, /Pilotes actifs/);
   assert.match(elements.get('eve-map-panel').innerHTML, /<br>/);
   assert.notEqual(window.__eveMapTest.characterColor({ character_id: 1 }), window.__eveMapTest.characterColor({ character_id: 2 }));
+  const pilotRing = window.__eveMapTest.characterRingSegments([{ character_id: 1 }, { character_id: 2 }]);
+  assert.equal(pilotRing.length, 2, 'deux pilotes partagent un seul cercle');
+  assert.ok(Math.abs((pilotRing[0].end - pilotRing[0].start) - Math.PI) < .2, 'chaque pilote reçoit approximativement une moitié du cercle');
   assert.equal(await window.focusEveMapCharacter(1), true, 'une puce personnage peut focaliser la carte sur sa position ESI');
   assert.equal(graph.lastCamera.target.id, 30000142);
-  assert.equal(elements.get('eve-map-character').value, '1', 'le sélecteur de la carte suit la puce du dashboard');
   pilotSystemId = 30000144;
   assert.equal(await window.refreshEveMapCharacterPositions(), true, 'un changement de système détecté par ESI met à jour le suivi');
   assert.equal(window.__eveMapTest.characterPositionSystemId(1), 30000144, 'le marqueur personnage reçoit immédiatement le nouveau système après un jump');
@@ -87,17 +89,31 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
     { id: 2, position_m: { x: 400, y: 12000, z: 600 } },
   ], [{ source: 1, target: 2 }]);
   assert.notEqual(planarNodes[0].y, planarNodes[1].y, 'la carte conserve la profondeur 3D authentique de New Eden');
-  const flatControls = { target: { x: 4, y: 23, z: -8 }, object: { up: { set(x, y, z) { this.value = [x, y, z]; } } } };
+  const flatControls = { target: { x: 4, y: 23, z: -8 }, mouseButtons: {}, object: { up: { set(x, y, z) { this.value = [x, y, z]; } } } };
   window.__eveMapTest.stabilizeOrbitControls(flatControls);
   assert.equal(flatControls.target.y, 23, 'le contrôle ne déforme pas la profondeur de la cible caméra');
-  assert.ok(flatControls.minPolarAngle > 0 && flatControls.maxPolarAngle < Math.PI / 2, 'la rotation ne franchit plus les pôles de la carte plane');
-  assert.equal(flatControls.screenSpacePanning, false, 'le clic droit reste projeté sur le plan de New Eden');
-  assert.match(fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'), /id="eve-map-reset-camera"/, 'la barre de carte expose un bouton de réinitialisation caméra');
+  assert.ok(flatControls.minPolarAngle > 0 && flatControls.maxPolarAngle > Math.PI / 2 && flatControls.maxPolarAngle < Math.PI, 'la rotation gauche reste libre autour de New Eden, hors singularité exacte des pôles');
+  assert.equal(flatControls.screenSpacePanning, true, 'le clic droit reste aligné aux axes visibles de l’écran, quelle que soit l’inclinaison de la caméra');
+  assert.deepEqual(JSON.parse(JSON.stringify(flatControls.mouseButtons)), { LEFT: 0, MIDDLE: 1, RIGHT: 2 }, 'le contrôle impose rotation à gauche, zoom au centre/molette et pan à droite');
+  assert.equal(flatControls.enableDamping, true, 'la rotation gauche retrouve son inertie fluide');
+  assert.ok(flatControls.dampingFactor > 0 && flatControls.dampingFactor < .1, 'l’amortissement de caméra reste léger');
+  const reticleNear = window.__eveMapTest.selectionReticleStyle(40), reticleFar = window.__eveMapTest.selectionReticleStyle(3000);
+  assert.ok(reticleNear.radius >= 17 && reticleFar.radius > reticleNear.radius, 'le viseur sélectionné suit le nœud tout en restant lisible à distance');
+  assert.ok(window.__eveMapTest.systemSelectionRadius(2500) > window.__eveMapTest.systemSelectionRadius(100), 'la zone de clic d’un système augmente au dézoom');
+  const mapMarkup = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  assert.match(mapMarkup, /id="eve-map-fit"/, 'l’en-tête de carte expose un unique bouton Home');
+  assert.match(fs.readFileSync(path.join(__dirname, 'eve_map.js'), 'utf8'), /ForceGraph3D\(\{ controlType: 'orbit' \}\)/, 'la carte utilise OrbitControls, nécessaire au pan strictement aligné à l’écran');
+  assert.doesNotMatch(mapMarkup, /id="eve-map-reset-camera"/, 'le bouton de réinitialisation redondant est supprimé');
+  assert.doesNotMatch(mapMarkup, /id="eve-map-character"/, 'la carte réutilise le sélecteur personnage global MMD');
   const lowOnly = { securityCounts: { high: 0, low: 4, null: 0 } };
   assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: false, null: false }), false);
   assert.equal(window.__eveMapTest.visibleLabelGroup(lowOnly, { high: true, low: true, null: false }), true);
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(true), 15000, 'le tracking ESI actualise tous les pilotes connectés lorsque la carte est ouverte');
   assert.equal(window.__eveMapTest.characterPositionTrackingInterval(false), null, 'le tracking ESI est arrêté lorsque la carte est masquée');
+  const oneLiveKill = window.__eveMapTest.liveWithCombat({ danger: 0 }, 1);
+  const threeLiveKills = window.__eveMapTest.liveWithCombat({ danger: 0 }, 3);
+  assert.deepEqual(JSON.parse(JSON.stringify(oneLiveKill)), { ship_jumps: 0, ship_kills: 0, pod_kills: 0, npc_kills: 0, recent_combat_kills: 1, danger: 20, danger_band: 'yellow' }, 'un kill R2Z2 récent relève immédiatement le danger du système');
+  assert.equal(threeLiveKills.danger_band, 'orange', 'plusieurs kills R2Z2 élèvent l’alerte même avant le prochain agrégat ESI');
   const skyShader = window.__eveMapTest.skyGpuFragmentShader;
   assert.match(skyShader, /float nebulaDensity/, 'le gaz repose sur un champ de nuages stable plutôt que sur un motif de rubans');
   assert.doesNotMatch(skyShader, /gasRibbon/, 'aucune sinusoïde visible ne doit découper le fond en bandes');

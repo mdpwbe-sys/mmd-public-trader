@@ -43,6 +43,14 @@
     return Boolean(await window.focusEveMapCharacter(characterId));
   }
 
+  async function focusSystem(systemId) {
+    if (!systemId) return false;
+    const shown = await show();
+    if (!shown || !window.focusEveMapSystem) return false;
+    window.focusEveMapSystem(Number(systemId));
+    return true;
+  }
+
   function clearCharacterFocus() {
     const workspace = el('eve-map-workspace');
     if (!workspace || workspace.hidden || !window.clearEveMapCharacterSelection) return false;
@@ -50,5 +58,5 @@
     return true;
   }
 
-  window.MapWorkspace = { show, hide, focusCharacter, clearCharacterFocus };
+  window.MapWorkspace = { show, hide, focusCharacter, focusSystem, clearCharacterFocus };
 }());

@@ -8,14 +8,20 @@ const script = html.match(/<script[^>]*>([\s\S]*?)<\/script>/i);
 assert(script, "script GUI introuvable");
 
 function element() {
+  const classNames = new Set();
   const base = {
     style: { display: "none" }, dataset: {}, innerHTML: "", textContent: "",
-    classList: { add: function () {}, remove: function () {}, toggle: function () {} },
+    classList: {
+      add: function (name) { classNames.add(name); },
+      remove: function (name) { classNames.delete(name); },
+      contains: function (name) { return classNames.has(name); },
+      toggle: function (name) { return classNames.has(name) ? classNames.delete(name) : classNames.add(name); }
+    },
     listeners: {},
     addEventListener: function (type, callback) {
       (this.listeners[type] = this.listeners[type] || []).push(callback);
     },
-    removeEventListener: function () {}, appendChild: function () {},
+    removeEventListener: function () {}, appendChild: function (child) { (this.children = this.children || []).push(child); },
     setAttribute: function () {}, querySelector: function () { return null; },
     querySelectorAll: function () { return []; }, contains: function () { return false; },
     getBoundingClientRect: function () {
@@ -36,12 +42,17 @@ titlebar.querySelector = function (selector) {
 };
 const marginOverlay = element();
 const settingsOverlay = element();
+const localOverlay = element();
 const elements = {
   "margin-overlay": marginOverlay,
   "margin-body": element(),
   "margin-title": element(),
   "settings-overlay": settingsOverlay,
   "settings-body": element(),
+  "local-intel-overlay": localOverlay,
+  "local-intel-body": element(),
+  "local-intel-title": element(),
+  "logstream": element(),
   "win-pin-btn": element()
 };
 const documentListeners = {};
@@ -130,9 +141,32 @@ context.showSettings();
 context.closeSettings();
 context.showMargin({ ok: false, reason: "test" });
 context.closeMargin();
+context.showLocalIntel({ ok: true, state: "ready", total: 1, pilots: [] });
+assert.strictEqual(localOverlay.style.display, "flex");
+assert(document.body.classList.contains("local-intel-mode"));
+assert.strictEqual(document.body.classList.contains("margin-mode-hud"), false);
+context.closeLocalIntel();
+
+let focusedSystem = null;
+window.MapWorkspace = { focusSystem: function (id) { focusedSystem = id; } };
+context.logLine('INTEL', 'watch', null, 'https://zkillboard.com/kill/42/', {
+  system_id: 30000142, system_name: 'Jita', killmail_id: 42,
+  kill_url: 'https://zkillboard.com/kill/42/', ship_name: 'Rifter', attacker_count: 2,
+});
+const combatRow = elements.logstream.children[0];
+assert.match(combatRow.innerHTML, /Jita/);
+assert.match(combatRow.innerHTML, /Rifter détruit/);
+assert.doesNotMatch(combatRow.innerHTML, /\[KM\]/, 'le lien du kill est intégré au vaisseau détruit');
+(documentListeners.click || []).forEach(callback => callback({
+  preventDefault: function () {},
+  target: { closest: function (selector) { return selector.includes('log-combat-action') ? { dataset: { combatSystemId: '30000142' } } : null; } },
+}));
+assert.strictEqual(focusedSystem, 30000142, 'le système du journal ouvre le focus carte');
 
 assert.strictEqual(settingsOverlay.style.display, "none");
 assert.strictEqual(marginOverlay.style.display, "none");
+assert.strictEqual(localOverlay.style.display, "none");
+assert.strictEqual(document.body.classList.contains("local-intel-mode"), false);
 assert(calls.some(call => call[0] === "topmost" && call[1] === true));
 assert(calls.some(call => call[0] === "restore" && call[1] === false));
 assert.strictEqual(calls.some(call => call[0] === "move"), false);

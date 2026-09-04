@@ -24,8 +24,31 @@ ZKILL_TTL_SECONDS = 10 * 60
 ENTITY_NAME_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_KILL_ATTACKERS = 20
 ZKILL_USER_AGENT = os.environ.get(
-    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd)"
+    "MMD_MAP_USER_AGENT", "EveMarketManager/1.0 (https://github.com/mdpwbe-sys/mmd-public-trader)"
 )
+
+
+def _stream_kills(system_id: int) -> list[dict]:
+    """Read the in-memory R2Z2 window; no network request is made here."""
+    try:
+        import eve_map_kill_stream
+        return eve_map_kill_stream.get_recent_kills(system_id)
+    except Exception:
+        return []
+
+
+def _merge_kills(live_kills: list[dict], historical_kills: list[dict], limit: int = 5) -> list[dict]:
+    """Prefer richer live rows while retaining lazy zKill history as a fallback."""
+    merged = {}
+    for row in historical_kills or []:
+        killmail_id = row.get("killmail_id")
+        if killmail_id is not None:
+            merged[int(killmail_id)] = row
+    for row in live_kills or []:
+        killmail_id = row.get("killmail_id")
+        if killmail_id is not None:
+            merged[int(killmail_id)] = {**merged.get(int(killmail_id), {}), **row}
+    return sorted(merged.values(), key=lambda row: row.get("time") or "", reverse=True)[:max(1, int(limit))]
 
 
 def danger_score(ship_kills: int, pod_kills: int) -> int:
@@ -45,12 +68,13 @@ def danger_band(score: int) -> str:
 
 
 class EveMapIntelService:
-    def __init__(self, cache_path: Path | None = None, now=time.time, fetch_json=None, fetch_names=None):
+    def __init__(self, cache_path: Path | None = None, now=time.time, fetch_json=None, fetch_names=None, live_kills=None):
         local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
         self.cache_path = Path(cache_path or local / "evernus.com" / "Evernus" / "cache" / "eve_map_intel.json")
         self.now = now
         self.fetch_json = fetch_json or self._fetch_esi
         self.fetch_names = fetch_names or self._fetch_entity_names
+        self.live_kills = live_kills or _stream_kills
         self._lock = threading.RLock()
         self._character_positions = None
         self._character_positions_at = 0
@@ -202,12 +226,15 @@ class EveMapIntelService:
     def get_recent_kills(self, system_id: int) -> dict:
         """Lazy zKill lookup: never called while loading the galaxy."""
         system_id = int(system_id)
+        live_kills = self.live_kills(system_id) or []
         with self._lock:
             cache = self._read_cache()
             zkill = cache.get("zkill", {})
             entry, now = zkill.get(str(system_id)), self.now()
             if entry and now - entry.get("updated_at", 0) < ZKILL_TTL_SECONDS and all("attackers" in kill for kill in entry.get("kills", [])):
-                return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry["updated_at"], "state": "fresh"}
+                return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", [])), "updated_at": entry["updated_at"], "state": "fresh"}
+            if live_kills:
+                return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", []) if entry else []), "updated_at": now, "state": "live"}
             url = f"https://zkillboard.com/api/kills/solarSystemID/{system_id}/"
             request = urllib.request.Request(url, headers={"User-Agent": ZKILL_USER_AGENT, "Accept-Encoding": "gzip"})
             try:
@@ -226,23 +253,25 @@ class EveMapIntelService:
                     kills.append({
                         "killmail_id": row.get("killmail_id"), "time": row.get("killmail_time"), "value": row.get("zkb", {}).get("totalValue", 0),
                         "solar_system_id": int(row.get("solar_system_id") or system_id), "ship_type_id": row.get("victim", {}).get("ship_type_id"), "url": f"https://zkillboard.com/kill/{row.get('killmail_id')}/",
+                        "victim_character_id": row.get("victim", {}).get("character_id"), "victim_corporation_id": row.get("victim", {}).get("corporation_id"), "victim_alliance_id": row.get("victim", {}).get("alliance_id"),
                         "attackers": attackers[:MAX_KILL_ATTACKERS], "attacker_count": len(attackers),
                     })
                 zkill[str(system_id)] = {"updated_at": now, "kills": kills}
                 cache["zkill"] = zkill
                 self._write_cache(cache)
-                return {"ok": True, "kills": kills, "updated_at": now, "state": "live"}
+                return {"ok": True, "kills": _merge_kills(live_kills, kills), "updated_at": now, "state": "live"}
             except Exception as exc:
                 if entry:
-                    return {"ok": True, "kills": entry.get("kills", []), "updated_at": entry.get("updated_at"), "state": "stale", "error": str(exc)}
-                return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
+                    return {"ok": True, "kills": _merge_kills(live_kills, entry.get("kills", [])), "updated_at": entry.get("updated_at"), "state": "stale", "error": str(exc)}
+                return {"ok": False, "kills": live_kills, "state": "unavailable", "error": str(exc)}
 
     def get_kill_attackers(self, system_id: int, killmail_id: int) -> dict:
         """Resolve attacker and ship names only when a cached kill is hovered."""
         system_id, killmail_id = int(system_id), int(killmail_id)
         with self._lock:
+            kill = next((row for row in self.live_kills(system_id) or [] if int(row.get("killmail_id", 0)) == killmail_id), None)
             entry = self._read_cache().get("zkill", {}).get(str(system_id), {})
-            kill = next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+            kill = kill or next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
             if not kill:
                 return {"ok": False, "attackers": [], "state": "unavailable"}
             attackers = kill.get("attackers", [])[:MAX_KILL_ATTACKERS]
@@ -259,6 +288,77 @@ class EveMapIntelService:
                     "ship_name": names.get(str(ship_type_id), {}).get("name", f"Ship {ship_type_id}" if ship_type_id else "Unknown ship"),
                 })
             return {"ok": True, "attackers": rows, "total_attackers": int(kill.get("attacker_count", len(rows))), "state": "fresh"}
+
+    def get_kill_attackers_intel(self, system_id: int, killmail_id: int) -> dict:
+        """Add lazy Local-style zKill profiles to attackers already resolved for a kill.
+
+        This intentionally runs only from a hover card.  The LocalAnalyzer owns
+        its own ten-minute cache and request pacing, so a busy R2Z2 stream never
+        turns into a per-kill burst of zKill statistics requests.
+        """
+        result = self.get_kill_attackers(system_id, killmail_id)
+        if not result.get("ok"):
+            return result
+        identities = [
+            (row["character_id"], row["pilot_name"])
+            for row in result.get("attackers", [])
+            if row.get("character_id") and row.get("pilot_name")
+        ]
+        if not identities:
+            return result
+        try:
+            import eve_local_analyzer
+            profiles = eve_local_analyzer.LocalAnalyzer().analyze_identities(identities)
+            by_character_id = {
+                int(profile["character_id"]): profile
+                for profile in profiles.get("pilots", [])
+                if profile.get("character_id")
+            }
+            for row in result["attackers"]:
+                profile = by_character_id.get(int(row.get("character_id") or 0))
+                if profile:
+                    row.update({
+                        key: profile.get(key)
+                        for key in ("danger", "snuggly", "band", "average_gang", "solo_ratio", "gang_ratio", "corporation_name", "alliance_name", "zkill_url")
+                    })
+            result["intel_state"] = profiles.get("state", "unavailable")
+        except Exception:
+            result["intel_state"] = "unavailable"
+        return result
+
+    def get_kill_victim_intel(self, system_id: int, killmail_id: int) -> dict:
+        """Resolve the victim only when its compact combat-log card is hovered."""
+        system_id, killmail_id = int(system_id), int(killmail_id)
+        with self._lock:
+            kill = next((row for row in self.live_kills(system_id) or [] if int(row.get("killmail_id", 0)) == killmail_id), None)
+            entry = self._read_cache().get("zkill", {}).get(str(system_id), {})
+            kill = kill or next((row for row in entry.get("kills", []) if int(row.get("killmail_id", 0)) == killmail_id), None)
+        if not kill:
+            return {"ok": False, "victim": {}, "state": "unavailable"}
+        victim = {
+            "character_id": kill.get("victim_character_id"),
+            "corporation_id": kill.get("victim_corporation_id"),
+            "alliance_id": kill.get("victim_alliance_id"),
+            "ship_type_id": kill.get("ship_type_id") or kill.get("victim_ship_type_id"),
+            "value": kill.get("value", 0), "time": kill.get("time") or kill.get("killmail_time"),
+        }
+        ids = [value for value in (victim["character_id"], victim["corporation_id"], victim["alliance_id"], victim["ship_type_id"]) if value]
+        names = self.get_entity_names(ids).get("names", {})
+        character_id = victim.get("character_id")
+        victim.update({
+            "pilot_name": names.get(str(character_id), {}).get("name", "Victime inconnue"),
+            "corporation_name": names.get(str(victim.get("corporation_id")), {}).get("name"),
+            "alliance_name": names.get(str(victim.get("alliance_id")), {}).get("name"),
+            "ship_name": names.get(str(victim.get("ship_type_id")), {}).get("name", "Vaisseau inconnu"),
+        })
+        if character_id:
+            try:
+                import eve_local_analyzer
+                profile = eve_local_analyzer.LocalAnalyzer().analyze_identities([(character_id, victim["pilot_name"])])
+                victim.update((profile.get("pilots") or [{}])[0])
+            except Exception:
+                pass
+        return {"ok": True, "victim": victim, "state": "fresh"}
 
     def get_character_positions(self) -> dict:
         """Return only opt-in SSO characters with the location capability."""
@@ -298,6 +398,14 @@ def get_recent_kills(system_id):
 
 def get_kill_attackers(system_id, killmail_id):
     return _default_service.get_kill_attackers(system_id, killmail_id)
+
+
+def get_kill_attackers_intel(system_id, killmail_id):
+    return _default_service.get_kill_attackers_intel(system_id, killmail_id)
+
+
+def get_kill_victim_intel(system_id, killmail_id):
+    return _default_service.get_kill_victim_intel(system_id, killmail_id)
 
 
 def get_sovereignty(force=False):

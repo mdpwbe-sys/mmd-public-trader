@@ -26,6 +26,10 @@ test('New Eden tab lazy-loads map renderer and leaves trading hidden', async () 
   window.focusEveMapCharacter = async id => { focusedCharacter = id; return true; };
   assert.equal(await window.MapWorkspace.focusCharacter(42), true);
   assert.equal(focusedCharacter, 42, 'le pont de workspace transmet le clic d’une puce personnage au renderer actif');
+  let focusedSystem = null;
+  window.focusEveMapSystem = id => { focusedSystem = id; };
+  assert.equal(await window.MapWorkspace.focusSystem(30000142), true);
+  assert.equal(focusedSystem, 30000142, 'le journal peut ouvrir puis centrer la carte sur le système d’un kill');
   let clearedCharacterFocus = 0;
   window.clearEveMapCharacterSelection = () => { clearedCharacterFocus += 1; };
   assert.equal(window.MapWorkspace.clearCharacterFocus(), true);

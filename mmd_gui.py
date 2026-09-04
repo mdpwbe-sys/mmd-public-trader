@@ -338,6 +338,67 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
+    def _present_local_intel(self, result):
+        """Deliver clipboard-local intel without coupling the worker to WebView."""
+        if not result.get("ok") or not WIN:
+            return
+        try:
+            bring_to_front()
+            WIN.evaluate_js(f"showLocalIntel({json.dumps(result, ensure_ascii=True)})")
+            if result.get("state") == "ready":
+                self.log_event(
+                    f"INTEL LOCAL · {result.get('total', 0)} pilotes · {result.get('dangerous', 0)} dangereux · {result.get('watch', 0)} à surveiller",
+                    "watch",
+                )
+        except Exception as exc:
+            self.log_event(f"INTEL LOCAL · affichage impossible ({type(exc).__name__}).", "err")
+
+    def _local_clipboard_diagnostic(self, event, count=0):
+        """One concise log line per clipboard change; never exposes clipboard content."""
+        messages = {
+            "local_detected": f"INTEL LOCAL · {int(count)} pilotes détectés · analyse en cours…",
+            "clipboard_empty": "INTEL LOCAL · presse-papiers sans texte lisible (EVE publie peut-être le contenu avec retard).",
+            "clipboard_rejected": f"INTEL LOCAL · {int(count)} lignes copiées, mais aucune liste de pilotes valide détectée.",
+            "clipboard_error": "INTEL LOCAL · lecture du presse-papiers Windows impossible (la veille reste active).",
+        }
+        self.log_event(messages.get(event, "INTEL LOCAL · événement presse-papiers ignoré."), "watch" if event == "local_detected" else "info")
+
+    def start_local_clipboard_analyzer(self):
+        """Start the independent Local clipboard watcher once per MMD process."""
+        watcher = getattr(self, "_local_clipboard_watcher", None)
+        if watcher:
+            watcher.start()
+            return True
+        try:
+            import eve_local_analyzer
+            analyzer = getattr(self, "_local_analyzer", None) or eve_local_analyzer.LocalAnalyzer()
+            watcher = eve_local_analyzer.LocalClipboardWatcher(
+                analyzer, self._present_local_intel, on_diagnostic=self._local_clipboard_diagnostic)
+            watcher.start()
+            self._local_analyzer = analyzer
+            self._local_clipboard_watcher = watcher
+            return True
+        except Exception:
+            return False
+
+    def analyze_local_clipboard(self):
+        """Manual fallback for a copied Local list; never block the WebView call."""
+        try:
+            import eve_local_analyzer
+            text = eve_local_analyzer.read_windows_clipboard()
+            analyzer = getattr(self, "_local_analyzer", None) or eve_local_analyzer.LocalAnalyzer()
+            self._local_analyzer = analyzer
+
+            def run_analysis():
+                result = analyzer.analyze(text, on_update=self._present_local_intel)
+                if not result.get("ok"):
+                    self.log_event(result.get("reason", "Liste Local invalide."), "watch")
+
+            threading.Thread(target=run_analysis, name="mmd-local-intel-manual", daemon=True).start()
+            return {"ok": True, "state": "loading"}
+        except Exception as exc:
+            return {"ok": False, "reason": str(exc)}
+
     def get_eve_map_kill_attackers(self, system_id, killmail_id):
         """Lazy attacker detail for one already-cached zKill entry."""
         try:
@@ -345,6 +406,22 @@ class Api:
             return eve_map_intel_service.get_kill_attackers(system_id, killmail_id)
         except Exception as exc:
             return {"ok": False, "attackers": [], "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_kill_attackers_intel(self, system_id, killmail_id):
+        """Lazy Local-style attacker profiles for one hovered combat log row."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_kill_attackers_intel(system_id, killmail_id)
+        except Exception as exc:
+            return {"ok": False, "attackers": [], "state": "unavailable", "error": str(exc)}
+
+    def get_eve_map_kill_victim_intel(self, system_id, killmail_id):
+        """Lazy victim profile and ship details for a combat-log hover card."""
+        try:
+            import eve_map_intel_service
+            return eve_map_intel_service.get_kill_victim_intel(system_id, killmail_id)
+        except Exception as exc:
+            return {"ok": False, "victim": {}, "state": "unavailable", "error": str(exc)}
 
     def get_eve_map_sovereignty(self, force=False):
         """Public CCP sovereignty map; cached separately from traffic/danger."""
@@ -1842,6 +1919,13 @@ def main():
     # Cache cote JS ; hotkeys seulement lorsque les fonctions JS sont chargees.
     def _boot_render():
         _setup_hwnd()
+        try:
+            if api.start_local_clipboard_analyzer():
+                api.log_event("INTEL LOCAL · veille presse-papiers active (copiez une liste Local EVE).", "watch")
+            else:
+                api.log_event("INTEL LOCAL · veille presse-papiers indisponible.", "err")
+        except Exception as exc:
+            api.log_event(f"INTEL LOCAL · démarrage impossible : {exc}", "err")
         if not _hotkeys_started.is_set():
             _hotkeys_started.set()
             _start_global_hotkeys()
