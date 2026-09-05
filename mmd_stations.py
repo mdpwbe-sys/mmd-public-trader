@@ -65,7 +65,12 @@ def normalize_buy_range(value):
     if value is None or isinstance(value, bool):
         return _invalid_buy_range(value)
     if isinstance(value, int):
-        return ("JUMPS", value) if value >= 0 else _invalid_buy_range(value)
+        # EVE market logs use enum values whereas ESI uses words.
+        legacy = {-1: ("STATION", None), 0: ("SYSTEM", None),
+                  32767: ("REGION", None)}
+        if value in legacy:
+            return legacy[value]
+        return ("JUMPS", value) if value > 0 else _invalid_buy_range(value)
     if isinstance(value, str):
         normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
         aliases = {
@@ -81,7 +86,11 @@ def normalize_buy_range(value):
             depth = int(normalized)
         except ValueError:
             return _invalid_buy_range(value)
-        return ("JUMPS", depth) if depth >= 0 else _invalid_buy_range(value)
+        legacy = {-1: ("STATION", None), 0: ("SYSTEM", None),
+                  32767: ("REGION", None)}
+        if depth in legacy:
+            return legacy[depth]
+        return ("JUMPS", depth) if depth > 0 else _invalid_buy_range(value)
     return _invalid_buy_range(value)
 
 def _env_stations():

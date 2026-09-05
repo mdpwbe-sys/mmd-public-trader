@@ -183,6 +183,9 @@ def parse_market_book(path):
                 vol = int(float(row.get("volRemaining", "0") or 0))
                 bid = str(row.get("bid", "")).strip().lower() == "true"
                 s = int(float(row.get("stationID", "0") or 0))
+                order_range = int(float(row.get("range", "") or 0))
+                solar_system_id = int(float(row.get("solarSystemID", "0") or 0))
+                region_id = int(float(row.get("regionID", "0") or 0))
             except (KeyError, ValueError, TypeError):
                 continue
             if tid is None and row.get("typeID"):
@@ -190,7 +193,12 @@ def parse_market_book(path):
                     tid = int(float(row["typeID"]))
                 except (ValueError, TypeError):
                     pass
-            rows.append({"price": price, "vol": vol, "side": 0 if bid else 1, "station_id": s})
+            rows.append({"price": price, "vol": vol, "side": 0 if bid else 1,
+                         "station_id": s, "range": order_range,
+                         "solar_system_id": solar_system_id, "region_id": region_id})
+            if s >= 1000000000000 and solar_system_id:
+                import mmd_stations as stations
+                stations.register_structure(s, solar_system_id)
     if not rows:
         raise ValueError("livre public vide")
     name = _iname(tid) if tid else "item inconnu"
@@ -241,7 +249,17 @@ def compute_margin(rows, cfg, station_pref=None, order_station_id=None):
 
     # Filtrer les SELL sur la station cible de vente; les BUY sur la station d'achat
     sell_rows = [r for r in rows if r.get("station_id") == target_station] if target_station else rows
-    buy_rows = [r for r in rows if r.get("station_id") == buy_station] if buy_station else rows
+    # A BUY in another station still competes when its range reaches the
+    # selected fulfilment station (e.g. Perimeter Region -> Jita).
+    target_row = next((r for r in rows if r.get("station_id") == buy_station
+                       and r.get("solar_system_id") and r.get("region_id")), None)
+    if target_row:
+        import mmd_stations as stations
+        buy_rows = [r for r in rows if r["side"] == 0 and stations.covers(
+            r.get("station_id"), r.get("range"), target_row["solar_system_id"],
+            target_row["region_id"], buy_station)]
+    else:
+        buy_rows = [r for r in rows if r.get("station_id") == buy_station] if buy_station else rows
 
     buys = [r for r in buy_rows if r["side"] == 0]
     sells = [r for r in sell_rows if r["side"] == 1]
@@ -262,7 +280,7 @@ def compute_margin(rows, cfg, station_pref=None, order_station_id=None):
     else:
         best_buy = max(buys, key=lambda r: r["price"])
         best_sell = min(sells, key=lambda r: r["price"])
-        st_buy = buy_station
+        st_buy = best_buy["station_id"]
         st_sell = target_station
 
     buy_price = best_buy["price"]

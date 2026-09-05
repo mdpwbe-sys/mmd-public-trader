@@ -360,6 +360,21 @@ def scan_authed(order_books=None):
             for oid, so in shared_snapshot.items():
                 pub_by_id[oid] = so  # dedup universelle par order_id
     # livre concurrent = toutes les sources, MOINS les ordres de TOUS les persos
+    # Public regional books can contain public Upwell orders. They already
+    # contain price/range, but their structure ID needs a system mapping before
+    # BUY-range overlap can be evaluated. Resolve only relevant BUY locations,
+    # bounded per scan; do not fetch their market books a second time.
+    own_buy_types = {o["type_id"] for o in orders if o.get("side") == 0}
+    public_structures = sorted({int(o.get("location_id") or 0) for o in order_books
+                                if o.get("side") == 0 and o.get("type_id") in own_buy_types
+                                and int(o.get("location_id") or 0) >= 1000000000000
+                                and stt.resolve(o.get("location_id"))[0] is None})[:24]
+    for sid in public_structures:
+        for character in chars:
+            info = fetch_structure_info(sid, character["id"])
+            if info:
+                stt.register_structure(sid, info.get("solarSystemID"), name=info.get("name", ""))
+                break
     all_owned_order_ids = {str(o["order_id"]) for o in orders}
     competitors = [o for o in pub_by_id.values() if o["order_id"] not in all_owned_order_ids]
     source = "ESI authenticated (SSO) + public + structures"
