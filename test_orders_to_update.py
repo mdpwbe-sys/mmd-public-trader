@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 import mmd_core as core
+import mmd_esi as esi
 import mmd_esi_orders as esi_orders
 import mmd_import as imp
 import mmd_price as price
@@ -268,6 +269,15 @@ class OrdersToUpdateTests(unittest.TestCase):
                 mock.patch.object(esi_orders, "_get", return_value=([raw], {"X-Pages": "1"})):
             snapshot = esi_orders.fetch_character_orders(1)
         self.assertIsNone(snapshot[0]["range"])
+
+    def test_public_market_order_preserves_buy_range_for_overlap(self):
+        raw = {"location_id": STATION_ID, "is_buy_order": True, "price": 100.0,
+               "volume_remain": 1, "issued": "2026-08-01T00:00:00Z",
+               "order_id": 1, "range": "region"}
+        with mock.patch.object(esi, "_get", return_value=([raw], {})):
+            snapshot = esi._fetch_one((700, THE_FORGE))
+        self.assertEqual("region", snapshot[0]["range"])
+
     def test_two_identical_scans_keep_per_character_sum_stable(self):
         orders = [
             _order("mine-1", 34, 1, 0),

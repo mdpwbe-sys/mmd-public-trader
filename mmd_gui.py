@@ -348,6 +348,9 @@ class Api:
                 get_positions=eve_map_intel_service.get_character_positions,
             )
             self._eve_map_intel_alert = controller
+            positions = eve_map_intel_service._default_service.position_store()
+            controller.position_snapshot = positions.snapshot
+            positions.subscribe(controller.update_positions)
         return controller
 
     def _sync_eve_map_combat_stream(self):
@@ -455,18 +458,25 @@ class Api:
 
     def _present_local_intel(self, result):
         """Deliver clipboard-local intel without coupling the worker to WebView."""
-        if not result.get("ok") or not WIN:
+        self._pending_local_intel = result
+        if not WIN or not getattr(self, "_local_ui_ready", False):
             return
         try:
             bring_to_front()
-            WIN.evaluate_js(f"showLocalIntel({json.dumps(result, ensure_ascii=True)})")
+            rendered = WIN.evaluate_js(f"typeof showLocalIntel === 'function' && showLocalIntel({json.dumps(result, ensure_ascii=True)}) === true")
+            # pywebview backends may return None even when the JavaScript ran.
+            # Only an explicit false means the overlay function was unavailable.
+            if rendered is False:
+                raise RuntimeError("Local overlay not rendered")
+            self._pending_local_intel = None
+            self.log_event("LOCAL ANALYZER · UI rendered", "info")
             if result.get("state") == "ready":
                 self.log_event(
                     f"INTEL LOCAL · {result.get('total', 0)} pilotes · {result.get('dangerous', 0)} dangereux · {result.get('watch', 0)} à surveiller",
                     "watch",
                 )
         except Exception as exc:
-            self.log_event(f"INTEL LOCAL · affichage impossible ({type(exc).__name__}).", "err")
+            self.log_event(f"LOCAL ANALYZER · FAILED · UI dispatch ({type(exc).__name__})", "err")
 
     def _local_clipboard_diagnostic(self, event, count=0):
         """One concise log line per clipboard change; never exposes clipboard content."""
@@ -488,31 +498,70 @@ class Api:
             import eve_local_analyzer
             analyzer = getattr(self, "_local_analyzer", None) or eve_local_analyzer.LocalAnalyzer()
             watcher = eve_local_analyzer.LocalClipboardWatcher(
-                analyzer, self._present_local_intel, on_diagnostic=self._local_clipboard_diagnostic)
+                analyzer, self._present_local_intel, on_diagnostic=self._local_clipboard_diagnostic,
+                on_trace=lambda message: self.log_event(message, "info"))
             watcher.start()
             self._local_analyzer = analyzer
             self._local_clipboard_watcher = watcher
             return True
-        except Exception:
+        except Exception as exc:
+            self.log_event(f"LOCAL ANALYZER · FAILED · startup ({type(exc).__name__})", "err")
             return False
 
     def analyze_local_clipboard(self):
         """Manual fallback for a copied Local list; never block the WebView call."""
         try:
-            import eve_local_analyzer
-            text = eve_local_analyzer.read_windows_clipboard()
-            analyzer = getattr(self, "_local_analyzer", None) or eve_local_analyzer.LocalAnalyzer()
-            self._local_analyzer = analyzer
-
-            def run_analysis():
-                result = analyzer.analyze(text, on_update=self._present_local_intel)
-                if not result.get("ok"):
-                    self.log_event(result.get("reason", "Liste Local invalide."), "watch")
-
-            threading.Thread(target=run_analysis, name="mmd-local-intel-manual", daemon=True).start()
+            if not self.start_local_clipboard_analyzer():
+                return {"ok": False, "reason": "Local Analyzer watcher unavailable"}
+            threading.Thread(target=self._local_clipboard_watcher.analyze_now,
+                             name="mmd-local-intel-manual", daemon=True).start()
             return {"ok": True, "state": "loading"}
         except Exception as exc:
             return {"ok": False, "reason": str(exc)}
+
+    def get_local_analyzer_status(self):
+        watcher = getattr(self, "_local_clipboard_watcher", None)
+        return watcher.status() if watcher else {"watcher_running": False}
+
+    def _start_local_chat_watchdog(self):
+        watcher = getattr(self, "_local_chat_watchdog", None)
+        if watcher is None:
+            from eve_local_watchdog import LocalChatWatchdog
+            import eve_map_intel_service
+            positions = eve_map_intel_service._default_service.position_store()
+            positions.subscribe(self._on_local_position_update)
+            watcher = LocalChatWatchdog(positions, on_log=lambda message: self.log_event(message, "watch"))
+            self._local_chat_watchdog = watcher
+        watcher.start()
+        return watcher
+
+    def _on_local_position_update(self, response):
+        previous = getattr(self, "_position_log_keys", {})
+        current = {}
+        for row in response.get("positions", []):
+            key = row["system_id"], row["source"]
+            current[row["character_id"]] = key
+            if previous.get(row["character_id"]) != key:
+                source = "LOCAL_LOG" if row["source"] == "LOCAL_CHATLOG" else "ESI fallback" if row["source"] == "ESI" else "CACHE"
+                self.log_event(f"POSITION · {row['name']} · {row['system_name']} · {source}", "info")
+        self._position_log_keys = current
+        if WIN and getattr(self, "_local_ui_ready", False):
+            try:
+                WIN.evaluate_js("window.refreshEveMapCharacterPositions?.()")
+            except Exception:
+                pass
+
+    def get_local_watchdog_settings(self):
+        watcher = self._start_local_chat_watchdog()
+        return {"ok": True, "settings": watcher.settings(), "status": watcher.status()}
+
+    def set_local_watchdog_settings(self, values):
+        try:
+            if isinstance(values, str):
+                values = json.loads(values)
+            return {"ok": True, "settings": self._start_local_chat_watchdog().configure(values)}
+        except (TypeError, ValueError, OSError):
+            return {"ok": False, "reason": "Unable to save Local Watchdog settings"}
 
     def get_eve_map_kill_attackers(self, system_id, killmail_id):
         """Lazy attacker detail for one already-cached zKill entry."""
@@ -2026,6 +2075,14 @@ def main():
     # Cache cote JS ; hotkeys seulement lorsque les fonctions JS sont chargees.
     def _boot_render():
         _setup_hwnd()
+        api._local_ui_ready = True
+        pending = getattr(api, "_pending_local_intel", None)
+        if pending:
+            api._present_local_intel(pending)
+        try:
+            api._start_local_chat_watchdog()
+        except Exception as exc:
+            api.log_event(f"LOCAL WATCHDOG · startup unavailable ({type(exc).__name__})", "err")
         try:
             if api.start_local_clipboard_analyzer():
                 api.log_event("INTEL LOCAL · veille presse-papiers active (copiez une liste Local EVE).", "watch")

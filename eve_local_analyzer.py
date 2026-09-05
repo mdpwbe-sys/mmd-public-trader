@@ -160,7 +160,23 @@ class LocalAnalyzer:
         names = parse_local_names(text)
         if not names:
             return {"ok": False, "reason": "Aucune liste Local valide détectée."}
-        ids = {str(name).casefold(): int(character_id) for name, character_id in self.resolve_ids(names).items()}
+        pending = summarize([{"name": name, "band": "unknown"} for name in names],
+                            fingerprint=local_fingerprint(names), state="loading")
+        if on_update:
+            on_update(pending)
+        try:
+            ids = {str(name).casefold(): int(character_id) for name, character_id in self.resolve_ids(names).items()}
+        except Exception as exc:
+            result = {**pending, "ok": False, "state": "error",
+                      "reason": f"Identity resolution unavailable ({type(exc).__name__}). Retry Analyze Clipboard Now."}
+            if on_update:
+                on_update(result)
+            return result
+        if not ids:
+            result = {**pending, "ok": False, "state": "error", "reason": "No valid EVE pilots resolved."}
+            if on_update:
+                on_update(result)
+            return result
         return self._analyze_resolved(names, ids, on_update=on_update)
 
     def analyze_identities(self, identities: list[tuple[int, str]], *, on_update=None) -> dict:
@@ -208,8 +224,9 @@ class LocalAnalyzer:
                     profile = profile_from_stats(character_id, row["name"], future.result())
                     row.update(profile)
                     profiles[str(character_id)] = {"updated_at": now, "profile": profile}
-                except Exception:
+                except Exception as exc:
                     row["band"] = "unknown"
+                    row["error"] = f"zKill unavailable ({type(exc).__name__})"
                 if on_update and (index == len(missing) or index % 4 == 0):
                     on_update(summarize(pilots, fingerprint=fingerprint, state="loading"))
         entity_ids = sorted({entity_id for row in pilots for entity_id in (row.get("corporation_id"), row.get("alliance_id")) if entity_id})
@@ -222,6 +239,7 @@ class LocalAnalyzer:
             row["alliance_name"] = entity_names.get(row.get("alliance_id"))
         self._write_cache(cache)
         result = summarize(pilots, fingerprint=fingerprint, state="ready")
+        result["errors"] = [row["error"] for row in pilots if row.get("error")]
         if on_update:
             on_update(result)
         return result
@@ -255,7 +273,7 @@ def _decode_clipboard_bytes(raw: bytes, clipboard_format: int, format_name: str 
     if clipboard_format == CF_UNICODETEXT or "unicode" in format_name:
         return raw.decode("utf-16-le", errors="replace").split("\0", 1)[0]
     if clipboard_format in (CF_TEXT, CF_OEMTEXT):
-        return raw.decode("mbcs", errors="replace").split("\0", 1)[0]
+        return raw.decode("oem" if clipboard_format == CF_OEMTEXT else "mbcs", errors="replace").split("\0", 1)[0]
     return raw.decode("utf-8-sig", errors="replace").split("\0", 1)[0]
 
 
@@ -295,6 +313,8 @@ def read_windows_clipboard() -> str:
     kernel32.GlobalLock.argtypes = [wintypes.HANDLE]
     kernel32.GlobalSize.restype = ctypes.c_size_t
     kernel32.GlobalSize.argtypes = [wintypes.HANDLE]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HANDLE]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
     if not user32.OpenClipboard(None):
         return ""
     try:
@@ -321,7 +341,7 @@ def read_windows_clipboard() -> str:
 class LocalClipboardWatcher:
     """Poll the Windows clipboard sequence number; never repeatedly parse its contents."""
 
-    def __init__(self, analyzer: LocalAnalyzer, on_result, *, sequence=_clipboard_sequence, read_text=read_windows_clipboard, poll_seconds=.75, on_diagnostic=None):
+    def __init__(self, analyzer: LocalAnalyzer, on_result, *, sequence=_clipboard_sequence, read_text=read_windows_clipboard, poll_seconds=.75, on_diagnostic=None, on_trace=None):
         self.analyzer, self.on_result = analyzer, on_result
         self.sequence, self.read_text, self.poll_seconds = sequence, read_text, poll_seconds
         self.on_diagnostic = on_diagnostic
@@ -332,6 +352,37 @@ class LocalClipboardWatcher:
         self._last_fingerprint = None
         self._last_error_signature = None
         self._thread = None
+        self.on_trace = on_trace
+        self._analysis_lock = threading.Lock()
+        self.last_event_at = None
+        self.last_candidate_count = 0
+        self.last_analysis_at = None
+        self.last_error = None
+
+    def status(self):
+        return {"watcher_running": bool(self._thread and self._thread.is_alive()),
+                "last_clipboard_sequence": self._last_sequence,
+                "last_event_at": self.last_event_at, "last_candidate_count": self.last_candidate_count,
+                "last_analysis_at": self.last_analysis_at, "last_error": self.last_error}
+
+    def _trace(self, message):
+        if self.on_trace:
+            self.on_trace("LOCAL ANALYZER · " + message)
+
+    def _deliver(self, result):
+        self._trace("UI dispatch")
+        self.on_result(result)
+
+    def analyze_now(self):
+        """Manual retry crosses the same parser/analyzer/callback seam."""
+        for _ in range(24):
+            if self.poll_once(force=True):
+                return True
+            if self._empty_retry_count == 0 or self._empty_retry_count >= 24:
+                return False
+            if self._stop.wait(self.poll_seconds):
+                return False
+        return False
 
     def _diagnose_error(self, error: Exception) -> None:
         """Report one Windows clipboard failure without leaking clipboard data."""
@@ -342,14 +393,25 @@ class LocalClipboardWatcher:
         if self.on_diagnostic:
             self.on_diagnostic("clipboard_error", 0)
 
-    def poll_once(self) -> bool:
+    def poll_once(self, force=False) -> bool:
+        if not self._analysis_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._poll_once(force)
+        finally:
+            self._analysis_lock.release()
+
+    def _poll_once(self, force=False) -> bool:
         try:
             sequence = self.sequence()
         except Exception as error:
             self._diagnose_error(error)
             return False
-        if not sequence or sequence == self._last_sequence:
+        if not force and (not sequence or sequence == self._last_sequence):
             return False
+        if sequence != self._empty_retry_sequence:
+            self.last_event_at = time.time()
+            self._trace("clipboard sequence changed")
         try:
             text = self.read_text()
         except Exception as error:
@@ -370,22 +432,54 @@ class LocalClipboardWatcher:
             # Keep one sequence eligible for a bounded 18 seconds.
             if self._empty_retry_count >= 24:
                 self._last_sequence = sequence
+                self.last_error = "Clipboard text unavailable after retries"
+                self._trace("FAILED · clipboard · text unavailable after retries")
+                if force:
+                    self._deliver({"ok": False, "state": "error", "reason": self.last_error})
             return False
         self._empty_retry_sequence, self._empty_retry_count = None, 0
         self._last_sequence = sequence
+        self._trace(f"text detected · {len(text)} chars")
         names = parse_local_names(text)
+        self.last_candidate_count = len(names)
+        self._trace(f"candidate pilots · {len(names)}")
         if not names:
             if self.on_diagnostic:
                 rows = sum(1 for row in str(text).replace("\r", "\n").split("\n") if row.strip())
                 self.on_diagnostic("clipboard_rejected", rows)
+            self._trace("ignored · insufficient pilot list")
+            if force:
+                self._deliver({"ok": False, "state": "error", "reason": "Insufficient pilot list: copy at least two Local names."})
             return False
         fingerprint = local_fingerprint(names)
-        if fingerprint == self._last_fingerprint:
+        if not force and fingerprint == self._last_fingerprint:
             return False
-        self._last_fingerprint = fingerprint
         if self.on_diagnostic:
             self.on_diagnostic("local_detected", len(names))
-        self.analyzer.analyze("\n".join(names), on_update=self.on_result)
+        self._trace("analysis started")
+        self.last_error = None
+        updates = []
+        def deliver(result):
+            updates.append(result)
+            self._deliver(result)
+        try:
+            result = self.analyzer.analyze("\n".join(names), on_update=deliver)
+            if isinstance(result, dict) and (not updates or result != updates[-1]):
+                deliver(result)
+            result = result if isinstance(result, dict) else (updates[-1] if updates else {})
+            if not result.get("ok"):
+                self.last_error = result.get("reason", "Analysis returned no result")
+                self._trace("FAILED · analysis · " + self.last_error)
+                return False
+        except Exception as exc:
+            self.last_error = f"Analysis unavailable ({type(exc).__name__})"
+            self._trace("FAILED · analysis/callback · " + self.last_error)
+            self._deliver({"ok": False, "state": "error", "reason": self.last_error})
+            return False
+        self._last_fingerprint = fingerprint
+        self.last_analysis_at = time.time()
+        self._trace(f"valid pilots · {result.get('resolved', len(names))}")
+        self._trace(f"analysis complete · {result.get('total', len(names))} pilots")
         return True
 
     def run(self) -> None:

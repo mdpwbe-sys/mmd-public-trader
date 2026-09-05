@@ -99,8 +99,7 @@ class EveMapIntelService:
         self.fetch_names = fetch_names or self._fetch_entity_names
         self.live_kills = live_kills or _stream_kills
         self._lock = threading.RLock()
-        self._character_positions = None
-        self._character_positions_at = 0
+        self._positions_store = None
 
     def _read_cache(self) -> dict:
         try:
@@ -417,26 +416,22 @@ class EveMapIntelService:
         return {"ok": True, "victim": victim, "state": "fresh"}
 
     def get_character_positions(self) -> dict:
-        """Return only opt-in SSO characters with the location capability."""
+        return self.position_store().refresh()
+
+    def position_store(self):
+        """One cache is consumed by both the map bridge and proximity Intel."""
         with self._lock:
-            now = self.now()
-            if self._character_positions is not None and now - self._character_positions_at < 15:
-                return {"ok": True, "positions": self._character_positions, "state": "fresh"}
-            positions, errors = [], []
-            for character in sso.connected_chars():
-                character_id = character["id"]
-                if not sso.character_capabilities(character_id).get("character_location"):
-                    continue
-                response = esi_auth.request_json("GET", f"/latest/characters/{character_id}/location/", character_id, timeout=8, max_attempts=2)
-                system_id = response.data.get("solar_system_id") if response.ok and isinstance(response.data, dict) else None
-                if system_id:
-                    positions.append({"character_id": character_id, "name": character["name"], "system_id": int(system_id)})
-                elif response.error:
-                    errors.append(response.error.message)
-            self._character_positions, self._character_positions_at = positions, now
-            if positions:
-                return {"ok": True, "positions": positions, "state": "live", "errors": errors}
-            return {"ok": False, "positions": [], "state": "scope_required" if not errors else "unavailable", "errors": errors}
+            if self._positions_store is None:
+                from eve_tracked_positions import TrackedPositions
+                from eve_map_service import _default_service
+                def fetch_location(character_id):
+                    if not sso.character_capabilities(character_id).get("character_location"):
+                        return None
+                    response = esi_auth.request_json("GET", f"/latest/characters/{character_id}/location/", character_id, timeout=8, max_attempts=2)
+                    return response.data.get("solar_system_id") if response.ok and isinstance(response.data, dict) else None
+                self._positions_store = TrackedPositions(map_service=_default_service,
+                    characters=lambda: sso.connected_chars(), fetch_location=fetch_location, now=self.now)
+            return self._positions_store
 
 
 _default_service = EveMapIntelService()

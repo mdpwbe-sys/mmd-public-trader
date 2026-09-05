@@ -227,6 +227,9 @@ def _fetch_one(args):
                 "issued": o.get("issued", ""),
                 "vol": int(o.get("volume_remain", 0)),
                 "order_id": str(o.get("order_id", "")),
+                # BUY overlap is range-aware.  Preserve the ESI enum from
+                # the public order book; missing remains conservatively None.
+                "range": o.get("range"),
             })
         status = 200
         return _FetchResult(res)

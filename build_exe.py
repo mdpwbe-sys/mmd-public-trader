@@ -84,6 +84,8 @@ def main() -> None:
         "--hidden-import=eve_map_intel_service",
         "--hidden-import=eve_map_kill_stream",
         "--hidden-import=eve_local_analyzer",
+        "--hidden-import=eve_local_watchdog",
+        "--hidden-import=eve_tracked_positions",
         "--hidden-import=eve_map_intel_alert",
         "--hidden-import=mmd_sso",
         "--hidden-import=mmd_margin",

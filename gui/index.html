@@ -2225,7 +2225,13 @@
   }
   function showLocalIntel(data) {
     const overlay = document.getElementById('local-intel-overlay'), body = document.getElementById('local-intel-body'), title = document.getElementById('local-intel-title');
-    if (!overlay || !body) return;
+    if (!overlay || !body) return false;
+    if (data.ok === false || data.state === 'error') {
+      title.textContent = 'Local Analyzer';
+      body.innerHTML = `<p role="alert">${escapeHtml(data.reason || 'Analysis unavailable')}</p><button class="btn small" onclick="analyzeLocalClipboard()">Analyze Clipboard Now</button>`;
+      overlay.style.zIndex = '10000'; overlay.style.display = 'flex';
+      return true;
+    }
     stopNativeDrag(true); document.body.classList.add('local-intel-mode');
     const api = getApi(); if (api?.set_topmost) api.set_topmost(true);
     const loading = data.state !== 'ready', total = Number(data.total || 0), resolved = Number(data.resolved || 0);
@@ -2239,13 +2245,22 @@
     }).join('') || '<tr><td colspan="8">Résolution des personnages en cours…</td></tr>';
     const groups = (data.groups || []).slice(0, 6).map(group => `<b>${escapeHtml(group.name)}</b> ×${Number(group.count || 0)}`).join(' &nbsp;·&nbsp; ');
     body.innerHTML = `<div class="local-intel-summary"><div class="local-intel-stat"><b>${total}</b><small>dans Local</small></div><div class="local-intel-stat danger"><b>${Number(data.dangerous || 0)}</b><small>dangereux</small></div><div class="local-intel-stat watch"><b>${Number(data.watch || 0)}</b><small>à surveiller</small></div><div class="local-intel-stat snuggly"><b>${Number(data.snuggly || 0)}</b><small>snuggly</small></div></div><p class="local-intel-progress">${loading ? `<b>Analyse en cours</b> · ${resolved}/${total} identités résolues · résultats mis à jour progressivement.` : 'Analyse terminée · dangerosité issue de zKillboard, à interpréter comme un signal tactique.'}</p><div class="local-intel-table"><table><thead><tr><th>Pilote</th><th>Corp / Alliance</th><th>Signal</th><th>Danger</th><th>Snuggly</th><th>Gang</th><th>K / L</th><th>ISK détruit</th></tr></thead><tbody>${rows}</tbody></table></div>${groups ? `<div class="local-groups">Groupes détectés : ${groups}</div>` : ''}<div class="margin-actions"><button class="btn small" onclick="analyzeLocalClipboard()">Analyser le presse-papiers</button><button class="btn primary" onclick="closeLocalIntel()">Fermer</button></div>`;
-    overlay.style.display = 'flex';
+    if (data.errors?.length) body.insertAdjacentHTML('afterbegin', '<p role="status">Partial result: some zKill profiles are unavailable.</p>');
+    overlay.style.zIndex = '10000'; overlay.style.display = 'flex';
+    return true;
   }
   function closeLocalIntel() {
     document.getElementById('local-intel-overlay').style.display = 'none'; document.body.classList.remove('local-intel-mode');
     const api = getApi(); if (api?.set_window_topmost) api.set_window_topmost(__isPinned);
   }
-  function analyzeLocalClipboard() { const api = getApi(); if (api?.analyze_local_clipboard) api.analyze_local_clipboard(); }
+  async function analyzeLocalClipboard() {
+    const api = getApi();
+    try {
+      if (!api?.analyze_local_clipboard) throw new Error('Local Analyzer unavailable');
+      const result = await api.analyze_local_clipboard();
+      if (result?.ok === false) showLocalIntel({...result, state: 'error'});
+    } catch (_) { showLocalIntel({ok: false, state: 'error', reason: 'Local Analyzer bridge unavailable'}); }
+  }
 
   window.openHistoryFromMarginAll = function openHistoryFromMarginAll(type_id) {
     window.__histPeriod = 0; // Force directement le mode TOUT pour l'historique !
@@ -2307,6 +2322,7 @@
     const connected = !!(a && a.disconnect_eve);
     const chars = (window.__ssoChars || []).map(c => c.name).join(', ') || '(aucun)';
     body.innerHTML = `
+      <div id="local-tools-settings"></div>
       <div id="trade-settings-slot"><div class="trade-settings-box trade-loading">Chargement des sources trading…</div></div>
       <div class="cfg-note">Persos connectes SSO : <b>${chars}</b></div>
       <div class="cfg-note">Scopes SSO incluent desormais : standings + skills
@@ -2332,6 +2348,7 @@
         <button class="btn small danger" onclick="resetDatabase()">Supprimer la base de données (reset à zéro)</button>
       </div>`;
     ov.style.display = 'flex';
+    window.loadLocalTools?.();
     if (window.TradingUI) await window.TradingUI.loadSettings(document.getElementById('trade-settings-slot'));
   }
   function closeSettings() {
@@ -2776,5 +2793,6 @@
 <link rel="stylesheet" href="eve_map.css">
 <script src="trading-ui.js"></script>
 <script src="map-workspace.js"></script>
+<script src="local-tools.js"></script>
 </body>
 </html>

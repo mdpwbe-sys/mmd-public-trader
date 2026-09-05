@@ -54,6 +54,7 @@ class EveMapIntelAlert:
         self._positions_by_character: dict[int, dict] = {}
         self._position_key = None
         self._seen_killmail_ids: dict[int, float] = {}
+        self.position_snapshot = None
 
     def _read_settings(self) -> dict:
         try:
@@ -115,19 +116,26 @@ class EveMapIntelAlert:
                 continue
             if selected and character_id not in selected:
                 continue
-            rows.append({"character_id": character_id, "name": str(row.get("name") or character_id), "system_id": system_id})
+            rows.append({**row, "character_id": character_id, "name": str(row.get("name") or row.get("character_name") or character_id), "system_id": system_id})
         return rows
 
     def refresh_positions(self) -> list[dict]:
         if not self.is_enabled() or not self.get_positions or not self.map_service:
             return []
         try:
-            positions = self._tracked_positions(self.get_positions())
+            return self.update_positions(self.get_positions())
         except Exception:
             return []
+
+    def update_positions(self, response):
+        """PositionUpdate subscriber: only recompute the existing radius cache."""
+        if not self.is_enabled() or not self.map_service:
+            return []
+        positions = self._tracked_positions(response)
         with self._lock:
             radius = self._settings["radius_jumps"]
             key = tuple(sorted((row["character_id"], row["system_id"]) for row in positions)) + ((-1, radius),)
+            self._positions_by_character = {row["character_id"]: row for row in positions}
             if key == self._position_key:
                 return positions
         reachable = {row["character_id"]: self.map_service.systems_within_jumps(row["system_id"], radius) for row in positions}
@@ -144,11 +152,19 @@ class EveMapIntelAlert:
         except (KeyError, TypeError, ValueError):
             return None
         now = self.now()
+        current = {row["character_id"]: row for row in self.position_snapshot().get("positions", [])} if self.position_snapshot else None
         with self._lock:
             self._seen_killmail_ids = {key: value for key, value in self._seen_killmail_ids.items() if now - value <= 60 * 60}
             if killmail_id in self._seen_killmail_ids:
                 return None
-            candidates = [(distance, character_id) for character_id, distances in self._reachable_by_character.items() if (distance := distances.get(system_id)) is not None]
+            candidates = []
+            for character_id, distances in self._reachable_by_character.items():
+                row = current.get(character_id, {}) if current is not None else {}
+                if current is not None and (not row.get("local_confirmed") or row.get("system_id") != self._positions_by_character.get(character_id, {}).get("system_id")):
+                    continue
+                distance = distances.get(system_id)
+                if distance is not None:
+                    candidates.append((distance, character_id))
             if not candidates:
                 return None
             distance, character_id = min(candidates)

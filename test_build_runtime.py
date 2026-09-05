@@ -10,6 +10,8 @@ class BuildRuntimeTests(unittest.TestCase):
         self.assertTrue(hasattr(module, "LocalAnalyzer"))
         build_script = (Path(__file__).parent / "build_exe.py").read_text(encoding="utf-8")
         self.assertIn('"--hidden-import=eve_local_analyzer"', build_script)
+        self.assertIn('"--hidden-import=eve_local_watchdog"', build_script)
+        self.assertIn('"--hidden-import=eve_tracked_positions"', build_script)
         self.assertIn('"--noupx"', build_script)
         self.assertIn('"--version-file={version_file}"', build_script)
         self.assertIn('parser.add_argument("--onedir"', build_script)
