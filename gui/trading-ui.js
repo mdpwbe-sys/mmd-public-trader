@@ -66,7 +66,7 @@
       kpi('Escrow achats', s.buy_escrow_cents) + kpi('P&L réalisé', s.realized_pnl_cents) + kpi('P&L latent', s.unrealized_pnl_cents) +
       percentKpi('Rendement réalisé 30j', s.monthly_return_bp) +
       `<div class="trade-kpi"><div class="k">Jours actifs</div><div class="v">${fmtQty(s.days_running)}</div></div>` +
-      `<div class="trade-kpi"><div class="k">Alertes</div><div class="v">${fmtQty(data.complete ? (data.alerts || []).length : null)}</div></div>`;
+      `<div class="trade-kpi"><div class="k">Alertes</div><div class="v">${fmtQty(Array.isArray(data.alerts) ? data.alerts.length : null)}</div></div>`;
     return shell('Dashboard', `<div class="trade-kpis">${cards}</div><div class="trade-insights">${insight('Meilleure position', winner)}${insight('Position à surveiller', loser)}</div>`);
   }
   function assets(data) {
@@ -112,16 +112,16 @@
     return /critical|high|danger|error/.test(level) ? 'bad' : (/warn|medium|risk/.test(level) ? 'warn' : 'good');
   }
   function alerts(data) {
-    const rows = Array.isArray(data.alerts) ? data.alerts : [];
+    const known = Array.isArray(data.alerts), rows = known ? data.alerts : [];
     const cards = rows.length ? `<div class="trade-alerts">${rows.map(row => { const cls = alertTone(row); return `<article class="trade-alert ${cls}">` +
       `<div class="trade-alert-head"><span class="trade-chip ${cls}">${esc(pick(row, ['severity', 'level'], 'Info'))}</span><span class="trade-chip ${cls}">${esc(pick(row, ['action'], 'Voir'))}</span></div>` +
       `<div class="trade-alert-name">${esc(assetName(row))}</div><div class="trade-alert-message">${esc(pick(row, ['message', 'reason'], 'Aucun détail'))}</div>` +
-      `<div class="trade-alert-impact ${tone(pick(row, ['impact_cents', 'value_cents'], null))}">Impact : ${fmtCents(pick(row, ['impact_cents', 'value_cents'], null))}</div></article>`; }).join('')}</div>` : `<div class="trade-empty">${data.complete ? 'Aucune alerte active.' : 'Alertes incomplètes tant que les sources ne sont pas synchronisées.'}</div>`;
+      `<div class="trade-alert-impact ${tone(pick(row, ['impact_cents', 'value_cents'], null))}">Impact : ${fmtCents(pick(row, ['impact_cents', 'value_cents'], null))}</div></article>`; }).join('')}</div>` : `<div class="trade-empty">${known ? 'Aucune alerte active.' : 'Alertes indisponibles.'}</div>`;
     return shell('Alerts', cards);
   }
 
   function updateCounts(data) {
-    [['tab-assets-c', data.assets, 'assets'], ['tab-transactions-c', data.transactions, 'transactions'], ['tab-alerts-c', data.alerts, null]].forEach(([id, rows, source]) => { const node = el(id), known = data.complete || (source && data.availability && data.availability[source] && data.availability[source].available); if (node) node.textContent = known && Array.isArray(rows) ? rows.length : '–'; });
+    [['tab-assets-c', data.assets, 'assets'], ['tab-transactions-c', data.transactions, 'transactions'], ['tab-alerts-c', data.alerts, 'alerts']].forEach(([id, rows, source]) => { const node = el(id), known = source === 'alerts' ? Array.isArray(rows) : (data.complete || Boolean(data.availability?.[source]?.available)); if (node) node.textContent = known && Array.isArray(rows) ? rows.length : '–'; });
   }
   function render() {
     const root = el('trade-view'); if (!root || window.__state.workspace === 'orders') return;
@@ -155,7 +155,9 @@
   }
   async function fetchSettings(force) {
     if (T.settings && !force) return T.settings; const request = ++T.settingsRequest;
-    try { const data = await call('get_trade_settings', !!force); if (request !== T.settingsRequest) return T.settings; T.settings = data || { ok: false, error: 'Réponse settings vide.' }; if (T.settings.ok && !T.containerKey) T.containerKey = selectedKey(T.settings.containers, T.settings.asset_source, ['character_id', 'item_id']); return T.settings; }
+    // Trade sources are global persisted settings. `force` only bypasses the
+    // JavaScript cache; it is not part of the pywebview API contract.
+    try { const data = await call('get_trade_settings'); if (request !== T.settingsRequest) return T.settings; T.settings = data || { ok: false, error: 'Réponse settings vide.' }; if (T.settings.ok && !T.containerKey) T.containerKey = selectedKey(T.settings.containers, T.settings.asset_source, ['character_id', 'item_id']); return T.settings; }
     catch (error) { if (request === T.settingsRequest) T.settings = { ok: false, error: String(error) }; return T.settings; }
   }
   function selectedKey(items, source, fields) {

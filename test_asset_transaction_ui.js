@@ -96,6 +96,25 @@ assert(!/division_id\s*:\s*['"]?1['"]?/.test(source));
     summary: {}, assets: [], transactions: [], alerts: [] });
   assert(!elements['trade-view'].innerHTML.includes('trade-sync-warning'));
 
+  // A regional-history backfill is partial, but it must not hide independently
+  // calculated FIFO KPIs or the alerts array already produced by the engine.
+  ui.acceptWorkspace({ ok: true, complete: false, stale: true,
+    sync_errors: ['Regional history: 504 pending'],
+    availability: { transactions: { available: true }, assets: { available: true } },
+    summary: { realized_pnl_cents: '123456', unrealized_pnl_cents: '654321', monthly_return_bp: '420' },
+    assets: [], transactions: [], alerts: [{ name: 'Alert one' }, { name: 'Alert two' }] });
+  ui.show('dashboard');
+  assert(elements['trade-view'].innerHTML.includes('1.234,56 ISK'), 'realized P&L remains visible during market-history backfill');
+  assert(elements['trade-view'].innerHTML.includes('6.543,21 ISK'), 'unrealized P&L remains visible when valuation exists');
+  assert(elements['trade-view'].innerHTML.includes('4,20 %'), '30-day return remains visible during market-history backfill');
+  assert(elements['trade-view'].innerHTML.includes('>2<'), 'Dashboard alerts KPI uses a known alerts array');
+  assert.strictEqual(elements['tab-alerts-c'].textContent, 2, 'Alerts tab uses a known alerts array');
+
+  ui.acceptWorkspace({ ok: true, complete: false, stale: true, availability: {}, summary: {}, assets: [], transactions: [], alerts: [] });
+  assert.strictEqual(elements['tab-alerts-c'].textContent, 0, 'a known empty alerts array is a real zero');
+  ui.acceptWorkspace({ ok: true, complete: false, stale: true, availability: {}, summary: {}, assets: [], transactions: [] });
+  assert.strictEqual(elements['tab-alerts-c'].textContent, '–', 'only an unknown alerts payload is unavailable');
+
   ['trade-division-select', 'trade-container-select', 'trade-settings-save',
     'trade-settings-status'].forEach(id => { elements[id] = node(id); });
   window.api.get_trade_settings = () => ({ ok: true, wallet_source: null,

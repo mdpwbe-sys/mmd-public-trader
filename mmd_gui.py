@@ -5,7 +5,7 @@ Mmd Order Manager - GUI frontend (pywebview + HTML/CSS).
 Pont natif vers mmd_core.scan() (fetch ESI public direct, parallele, thread-safe)
 + deep-link EVE + vault Obsidian.
 """
-import os, subprocess, sys, json, threading, time
+import os, sys, json, threading, time
 import webview
 import mmd_core as core
 import migrations
@@ -13,6 +13,7 @@ import migrations
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI_DIR = os.path.join(HERE, "gui")
 INDEX = os.path.join(GUI_DIR, "index.html")
+PUBLIC_NEW_EDEN_MUSIC_PATH = os.environ.get("MMD_NEW_EDEN_MUSIC_PATH", "")
 from platform_state import state_path
 # Persistant state dir (%APPDATA%/MMD-Trader) — survives onefile _MEI temp extraction.
 LOG_PATH = state_path("mmd_history.log")
@@ -329,20 +330,126 @@ class Api:
             return {"ok": False, "kills": [], "state": "unavailable", "error": str(exc)}
 
     def get_eve_map_combat_markers(self):
-        """Return the bounded global R2Z2 feed used by the visible map only."""
+        """Return the bounded global R2Z2 feed without changing its lifecycle."""
         try:
             import eve_map_kill_stream
             return self._describe_combat_markers(eve_map_kill_stream.get_recent_markers())
         except Exception as exc:
             return {"ok": False, "markers": [], "state": "unavailable", "error": str(exc)}
 
-    def set_eve_map_combat_stream_active(self, active):
-        """Avoid consuming the global zKillboard stream while the map is closed."""
+    def _intel_alert_controller(self):
+        controller = getattr(self, "_eve_map_intel_alert", None)
+        if controller is None:
+            import eve_map_intel_alert
+            import eve_map_intel_service
+            import eve_map_service
+            controller = eve_map_intel_alert.EveMapIntelAlert(
+                map_service=eve_map_service._default_service,
+                get_positions=eve_map_intel_service.get_character_positions,
+            )
+            self._eve_map_intel_alert = controller
+        return controller
+
+    def _sync_eve_map_combat_stream(self):
+        """One R2Z2 consumer serves the visible map and optional proximity intel."""
+        import eve_map_intel_alert
+        import eve_map_kill_stream
+        required = eve_map_intel_alert.stream_required(getattr(self, "_eve_map_visible", False), self._intel_alert_controller().is_enabled())
+        eve_map_kill_stream.set_marker_handler(self._handle_eve_map_combat_marker if required else None)
+        eve_map_kill_stream.set_active(required)
+        return required
+
+    def _play_intel_alert_sound(self):
+        def play():
+            try:
+                import winsound
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                pass
+        threading.Thread(target=play, name="mmd-intel-alert-sound", daemon=True).start()
+
+    def _eve_map_music_controller(self):
+        """Optional local soundtrack; public releases do not bundle an asset."""
+        controller = getattr(self, "_eve_map_music", None)
+        if controller is None:
+            from eve_map_audio import EveMapMusic
+            controller = EveMapMusic(PUBLIC_NEW_EDEN_MUSIC_PATH)
+            self._eve_map_music = controller
+        return controller
+
+    def _present_eve_map_intel_alert(self, alert, system_name):
+        if not WIN:
+            return
         try:
-            import eve_map_kill_stream
-            eve_map_kill_stream.set_marker_handler(self._log_combat_marker if active else None)
-            eve_map_kill_stream.set_active(bool(active))
-            return {"ok": True}
+            payload = {**alert, "system_name": system_name}
+            WIN.evaluate_js(f"showEveMapIntelAlert({json.dumps(payload, ensure_ascii=True)})")
+        except Exception:
+            pass
+
+    def _handle_eve_map_combat_marker(self, marker):
+        """Log visible-map events and alert once when a tracked pilot is nearby."""
+        if getattr(self, "_eve_map_visible", False):
+            self._log_combat_marker(marker)
+        try:
+            alert = self._intel_alert_controller().on_marker(marker)
+        except Exception:
+            alert = None
+        if not alert:
+            return
+        try:
+            import eve_map_service
+            system = eve_map_service._default_service.get_system(alert["kill_system_id"]) or {}
+            system_name = system.get("name", f"System {alert['kill_system_id']}")
+        except Exception:
+            system_name = f"System {alert['kill_system_id']}"
+        ship_name = self._combat_ship_name(alert.get("victim_ship_type_id"))
+        alert["system_name"], alert["ship_name"] = system_name, ship_name
+        self.log_event(f"INTEL ALERT · {system_name} · {alert['distance_jumps']} jumps · nearest: {alert['nearest_character_name']}", "watch")
+        self._eve_map_music_controller().duck(alert["distance_jumps"])
+        if self._intel_alert_controller().settings().get("sound_enabled"):
+            self._play_intel_alert_sound()
+        self._present_eve_map_intel_alert(alert, system_name)
+
+    def get_eve_map_music_source(self):
+        """Legacy capability probe; playback is native Windows when configured."""
+        return self._eve_map_music_controller().state()
+
+    def get_eve_map_music_state(self):
+        return self._eve_map_music_controller().state()
+
+    def toggle_eve_map_music(self):
+        return self._eve_map_music_controller().toggle()
+
+    def set_eve_map_music_volume(self, volume):
+        try:
+            return self._eve_map_music_controller().set_volume(volume)
+        except (TypeError, ValueError):
+            return {**self._eve_map_music_controller().state(), "ok": False, "error": "Invalid music volume"}
+
+    def set_eve_map_music_visible(self, visible):
+        return self._eve_map_music_controller().set_visible(visible)
+
+    def get_eve_map_intel_alert_settings(self):
+        try:
+            return {"ok": True, "settings": self._intel_alert_controller().settings()}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "settings": {}}
+
+    def set_eve_map_intel_alert_settings(self, values):
+        try:
+            values = json.loads(values) if isinstance(values, str) else values
+            settings = self._intel_alert_controller().configure(values)
+            self._sync_eve_map_combat_stream()
+            return {"ok": True, "settings": settings}
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "settings": {}}
+
+    def set_eve_map_combat_stream_active(self, active):
+        """The map visibility is one of the two explicit stream requirements."""
+        try:
+            self._eve_map_visible = bool(active)
+            self._eve_map_music_controller().set_visible(self._eve_map_visible)
+            return {"ok": True, "stream_required": self._sync_eve_map_combat_stream()}
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -1482,55 +1589,47 @@ class Api:
 
     def copy_text(self, text):
         text_str = str(text).strip()
-        # 1. Native Windows ctypes API 64-bit (méthode directe & instantanée sans découpage)
-        try:
-            import ctypes
-            from ctypes import wintypes
-            user32 = ctypes.windll.user32
-            kernel32 = ctypes.windll.kernel32
-            kernel32.GlobalAlloc.restype = ctypes.c_void_p
-            kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-            kernel32.GlobalLock.restype = ctypes.c_void_p
-            kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-            kernel32.GlobalUnlock.restype = wintypes.BOOL
-            kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-            user32.SetClipboardData.restype = ctypes.c_void_p
-            user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
-            user32.OpenClipboard.restype = wintypes.BOOL
-            user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-            user32.EmptyClipboard.restype = wintypes.BOOL
-            user32.EmptyClipboard.argtypes = []
-            user32.CloseClipboard.restype = wintypes.BOOL
-            user32.CloseClipboard.argtypes = []
+        # Native Win32 only: avoid spawning PowerShell for a normal clipboard
+        # operation.  A short retry covers the brief lock EVE can hold after a
+        # copy while keeping the runtime free of shell execution.
+        for _ in range(3):
+            try:
+                import ctypes
+                from ctypes import wintypes
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                kernel32.GlobalAlloc.restype = ctypes.c_void_p
+                kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                kernel32.GlobalLock.restype = ctypes.c_void_p
+                kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+                kernel32.GlobalUnlock.restype = wintypes.BOOL
+                kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+                user32.SetClipboardData.restype = ctypes.c_void_p
+                user32.SetClipboardData.argtypes = [wintypes.UINT, ctypes.c_void_p]
+                user32.OpenClipboard.restype = wintypes.BOOL
+                user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+                user32.EmptyClipboard.restype = wintypes.BOOL
+                user32.EmptyClipboard.argtypes = []
+                user32.CloseClipboard.restype = wintypes.BOOL
+                user32.CloseClipboard.argtypes = []
 
-            buf = ctypes.create_unicode_buffer(text_str)
-            byte_len = ctypes.sizeof(buf)
-            if user32.OpenClipboard(None):
-                user32.EmptyClipboard()
-                h = kernel32.GlobalAlloc(0x2000, byte_len)
-                p = kernel32.GlobalLock(h)
-                if p:
-                    ctypes.memmove(p, buf, byte_len)
-                    kernel32.GlobalUnlock(h)
-                    user32.SetClipboardData(13, h)
-                user32.CloseClipboard()
-                return True
-        except Exception:
-            pass
-
-        # 2. PowerShell via pipe stdin (fallback anti-découpage par virgule)
-        try:
-            import subprocess
-            res = subprocess.run(
-                ['powershell', '-NoProfile', '-Command', '$input | Set-Clipboard'],
-                input=text_str.encode('utf-8'),
-                creationflags=0x08000000, # CREATE_NO_WINDOW
-                timeout=3
-            )
-            if res.returncode == 0:
-                return True
-        except Exception:
-            pass
+                buf = ctypes.create_unicode_buffer(text_str)
+                byte_len = ctypes.sizeof(buf)
+                if user32.OpenClipboard(None):
+                    try:
+                        user32.EmptyClipboard()
+                        h = kernel32.GlobalAlloc(0x2000, byte_len)
+                        p = kernel32.GlobalLock(h)
+                        if p:
+                            ctypes.memmove(p, buf, byte_len)
+                            kernel32.GlobalUnlock(h)
+                            if user32.SetClipboardData(13, h):
+                                return True
+                    finally:
+                        user32.CloseClipboard()
+            except Exception:
+                pass
+            time.sleep(.05)
         return False
 
     def exit(self):

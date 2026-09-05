@@ -5,6 +5,8 @@ from unittest import mock
 import mmd_core as core
 import mmd_esi_orders as esi_orders
 import mmd_import as imp
+import mmd_price as price
+import mmd_stations as stations
 
 try:
     import mmd_gui as gui
@@ -13,6 +15,9 @@ except Exception:
 
 
 STATION_ID = 60003760
+PERIMETER_STRUCTURE_ID = 990000001
+PERIMETER_SYSTEM_ID = 30000144
+THE_FORGE = 10000002
 
 
 def _order(order_id, type_id, char_id, side):
@@ -35,7 +40,127 @@ def _competitor(order_id, type_id, side):
     }
 
 
+def _buy(order_id, *, char_id=1, location_id=STATION_ID,
+         issued="2026-08-01T00:00:00Z", price_value=100.0):
+    row = _order(order_id, 700, char_id, 0)
+    row.update(station_id=location_id, issued=issued, price=price_value,
+               price_cents=price.to_cents(price_value), range="station")
+    return row
+
+
+def _external_buy(order_id, *, location_id, issued, price_value=100.0):
+    return {"order_id": order_id, "type_id": 700, "location_id": location_id,
+            "side": 0, "price": price_value, "vol": 1, "range": "station",
+            "issued": issued}
+
+
 class OrdersToUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self._sys_cache = dict(stations._sys_cache)
+        self._runtime_structures = dict(getattr(stations, "_runtime_structures", {}))
+        stations._sys_cache.clear()
+        getattr(stations, "_runtime_structures", {}).clear()
+
+    def tearDown(self):
+        stations._sys_cache.clear()
+        stations._sys_cache.update(self._sys_cache)
+        if hasattr(stations, "_runtime_structures"):
+            stations._runtime_structures.clear()
+            stations._runtime_structures.update(self._runtime_structures)
+
+    def _buy_scan(self, mine, external):
+        def resolve(location_id):
+            if int(location_id) in (STATION_ID, PERIMETER_STRUCTURE_ID):
+                return (PERIMETER_SYSTEM_ID, THE_FORGE, str(location_id))
+            return (None, None, str(location_id))
+
+        def hub_priority(location_id):
+            return {STATION_ID: 2, PERIMETER_STRUCTURE_ID: 1}.get(int(location_id), 0)
+
+        with mock.patch.object(stations, "resolve", side_effect=resolve), \
+                mock.patch.object(stations, "covers", return_value=True), \
+                mock.patch.object(stations, "buy_hub_priority", side_effect=hub_priority):
+            return core._scan_core([mine], [external], "buy priority")["orders_full"][0]
+
+    def test_buy_jita_old_beats_perimeter_new_at_same_price(self):
+        row = self._buy_scan(
+            _buy("mine", location_id=STATION_ID),
+            _external_buy("perimeter", location_id=PERIMETER_STRUCTURE_ID,
+                          issued="2026-08-02T00:00:00Z"),
+        )
+        self.assertFalse(row["needs_update"])
+        self.assertFalse(row["fifo_overtaken"])
+
+    def test_buy_jita_new_beats_perimeter_old_at_same_price(self):
+        row = self._buy_scan(
+            _buy("mine", location_id=PERIMETER_STRUCTURE_ID),
+            _external_buy("jita", location_id=STATION_ID,
+                          issued="2026-08-02T00:00:00Z"),
+        )
+        self.assertTrue(row["needs_update"])
+        self.assertFalse(row["fifo_overtaken"])
+
+    def test_buy_newer_jita_same_price_is_fifo_overtake(self):
+        row = self._buy_scan(
+            _buy("mine", location_id=STATION_ID),
+            _external_buy("jita", location_id=STATION_ID,
+                          issued="2026-08-02T00:00:00Z"),
+        )
+        self.assertTrue(row["needs_update"])
+        self.assertTrue(row["fifo_overtaken"])
+
+    def test_buy_newer_perimeter_same_price_is_fifo_overtake(self):
+        row = self._buy_scan(
+            _buy("mine", location_id=PERIMETER_STRUCTURE_ID),
+            _external_buy("perimeter", location_id=PERIMETER_STRUCTURE_ID,
+                          issued="2026-08-02T00:00:00Z"),
+        )
+        self.assertTrue(row["needs_update"])
+        self.assertTrue(row["fifo_overtaken"])
+
+    def test_perimeter_structure_competitor_is_detected_and_fast_copy_ticks(self):
+        mine = _buy("mine", location_id=PERIMETER_STRUCTURE_ID)
+        external = _external_buy("external", location_id=PERIMETER_STRUCTURE_ID,
+                                 issued="2026-08-02T00:00:00Z")
+        snapshot = {"external": dict(external, station_id=PERIMETER_STRUCTURE_ID)}
+        with mock.patch.object(esi_orders, "fetch_all_orders",
+                               return_value=([mine], [], [1])), \
+                mock.patch.object(esi_orders.sso, "connected_chars",
+                                  return_value=[{"id": 1, "name": "Pilot 1"}]), \
+                mock.patch.object(esi_orders, "_env_structure_ids",
+                                  return_value={PERIMETER_STRUCTURE_ID}), \
+                mock.patch.object(esi_orders, "fetch_structure_orders",
+                                  return_value=(snapshot, "accessible")), \
+                mock.patch.object(esi_orders, "fetch_structure_info",
+                                  return_value={"solarSystemID": PERIMETER_SYSTEM_ID,
+                                                "name": "Perimeter test structure"}), \
+                mock.patch.object(stations, "_region_for_system", return_value=THE_FORGE):
+            data = esi_orders.scan_authed(order_books=[])
+        row = data["orders_full"][0]
+        self.assertTrue(row["needs_update"])
+        self.assertEqual(price.to_cents(price.next_price(100.0, 0)),
+                         row["new_price_cents"])
+        self.assertEqual((PERIMETER_SYSTEM_ID, THE_FORGE,
+                          "Perimeter test structure"),
+                         stations.resolve(PERIMETER_STRUCTURE_ID))
+
+    def test_only_our_alts_do_not_change_fast_copy_price(self):
+        mine = _buy("mine", char_id=1)
+        alt = _buy("alt", char_id=2, issued="2026-08-02T00:00:00Z",
+                   price_value=101.0)
+        data = core._scan_core([mine, alt], [], "alts only")
+        row = next(row for row in data["orders_full"] if row["order_id"] == "mine")
+        self.assertEqual("COMPETING_ALT", row["status"])
+        self.assertEqual(mine["price_cents"], row["new_price_cents"])
+
+    def test_runtime_structure_resolution_keeps_system_and_region(self):
+        with mock.patch.object(stations, "_region_for_system", return_value=THE_FORGE):
+            stations.register_structure(PERIMETER_STRUCTURE_ID, PERIMETER_SYSTEM_ID,
+                                        name="Perimeter test structure")
+        self.assertEqual(
+            (PERIMETER_SYSTEM_ID, THE_FORGE, "Perimeter test structure"),
+            stations.resolve(PERIMETER_STRUCTURE_ID),
+        )
     def test_two_identical_scans_keep_per_character_sum_stable(self):
         orders = [
             _order("mine-1", 34, 1, 0),

@@ -4,6 +4,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
 
+test('New Eden header keeps a compact one-line filter bar and icon actions', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  for (const id of ['eve-map-gates', 'eve-map-traffic', 'eve-map-danger', 'eve-map-sovereignty', 'eve-map-empires']) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /id="eve-map-hotspots"/);
+  assert.match(html, /INTEL ALERT/);
+  assert.doesNotMatch(html, /eve-map-filter-title|eve-map-my-pilots|eve-map-esi-status|eve-map-r2z2-status|eve-map-pilots-status/);
+  assert.ok(html.indexOf('id="eve-map-panel-toggle"') > html.indexOf('class="eve-map-toolbar"'));
+  assert.doesNotMatch(html.slice(html.indexOf('class="eve-map-header"'), html.indexOf('class="eve-map-toolbar"')), /eve-map-panel-toggle/);
+  assert.match(html, /id="eve-map-panel-toggle"[^>]*>▣<\/button>/);
+  assert.match(html, /id="eve-map-fullscreen"[^>]*>⛶<\/button>/);
+});
+
 test('New Eden tab lazy-loads map renderer and leaves trading hidden', async () => {
   const nodes = new Map(['eve-map-workspace', 'orders-metrics', 'orders-grid', 'trade-view', 'eve-map-canvas'].map(id => [id, { id, hidden: false, innerHTML: '' }]));
   const scripts = [], tabs = [{ dataset: { workspace: 'map' }, classList: { toggle() {} } }];

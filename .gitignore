@@ -80,3 +80,4 @@ app_data.db-shm
 dist/
 build/
 *.spec
+*.sha256

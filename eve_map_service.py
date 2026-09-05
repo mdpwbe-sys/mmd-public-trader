@@ -40,6 +40,26 @@ class EveMapService:
             return None
         return math.dist(tuple(source["position_m"].values()), tuple(target["position_m"].values()))
 
+    def systems_within_jumps(self, source_id, max_jumps):
+        """Return a bounded local gate-distance map from one system."""
+        self._load()
+        try:
+            source_id, max_jumps = int(source_id), max(0, int(max_jumps))
+        except (TypeError, ValueError):
+            return {}
+        if source_id not in self._systems:
+            return {}
+        distances, queue = {source_id: 0}, deque([source_id])
+        while queue:
+            current = queue.popleft()
+            if distances[current] >= max_jumps:
+                continue
+            for neighbor in self._adjacency[current]:
+                if neighbor not in distances:
+                    distances[neighbor] = distances[current] + 1
+                    queue.append(neighbor)
+        return distances
+
     @staticmethod
     def security_class(security_status):
         """Match EVE's displayed security band from the raw SDE/ESI value."""

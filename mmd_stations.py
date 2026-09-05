@@ -42,6 +42,7 @@ _SDE = _load_sde()
 # caches
 _sys_cache = {}
 _region_cache = {}
+_runtime_structures = {}
 
 def _env_stations():
     """Stations perso depuis .env (Trading_Upwell_ID / Sell_Station_ID)."""
@@ -75,6 +76,27 @@ def env_stations():
         _ENV_STATIONS = _env_stations()
     return _ENV_STATIONS
 
+def _configured_trading_upwell_id():
+    """Return the configured buy Upwell ID without baking a structure into code."""
+    try:
+        with open(os.path.join(HERE, ".env"), encoding="utf-8") as env_file:
+            for line in env_file:
+                if line.strip().startswith("Trading_Upwell_ID="):
+                    return int(line.split("=", 1)[1].strip().split("//")[-1])
+    except Exception:
+        pass
+    return None
+
+def buy_hub_priority(location_id):
+    """BUY tie-break hub priority: Jita before the configured Perimeter Upwell."""
+    try:
+        location_id = int(location_id)
+    except (TypeError, ValueError):
+        return 0
+    if location_id == 60003760:
+        return 2
+    return 1 if location_id == _configured_trading_upwell_id() else 0
+
 def _station_chain(station_id):
     """Retourne {solarSystemID, regionID, constellationID, factionID, systemName}
     via le SDE leger, ou None si station inconnue du SDE.
@@ -104,6 +126,9 @@ def resolve_name(location_id, fallback=""):
     loc_id = int(location_id or 0)
     if not loc_id:
         return fallback or "Inconnu"
+    runtime = _runtime_structures.get(loc_id)
+    if runtime and runtime[2]:
+        return runtime[2]
     chain = _station_chain(loc_id)
     if chain and chain.get("systemName"):
         return f"{chain['systemName']} ({loc_id})"
@@ -125,22 +150,27 @@ def faction_for_station(station_id):
 
 def resolve(location_id):
     """Retourne (solarSystemID, regionID, name) pour un location_id."""
-    if location_id in _sys_cache:
-        return _sys_cache[location_id]
-    loc_id = int(location_id or 0)
+    try:
+        loc_id = int(location_id or 0)
+    except (TypeError, ValueError):
+        return None, None, resolve_name(location_id, str(location_id))
+    if loc_id in _runtime_structures:
+        return _runtime_structures[loc_id]
+    if loc_id in _sys_cache:
+        return _sys_cache[loc_id]
     chain = _station_chain(loc_id) if loc_id else None
     if chain:
         res = (chain["solarSystemID"], chain["regionID"], resolve_name(loc_id))
-        _sys_cache[location_id] = res
+        _sys_cache[loc_id] = res
         return res
     # structure du .env
     env = env_stations()
     if loc_id in env:
         res = (None, None, env[loc_id]["name"])
-        _sys_cache[location_id] = res
+        _sys_cache[loc_id] = res
         return res
     res = (None, None, resolve_name(loc_id, str(loc_id)))
-    _sys_cache[location_id] = res
+    _sys_cache[loc_id] = res
     return res
 
 def system_region(system_id):
@@ -151,6 +181,25 @@ def system_region(system_id):
         reg = _SDE["systems"][str(system_id)].get("r")
     _region_cache[system_id] = reg
     return reg
+
+def _region_for_system(system_id):
+    return system_region(system_id)
+
+def register_structure(structure_id, solar_system_id, *, name=""):
+    """Cache an accessible Upwell structure with its authoritative ESI system."""
+    try:
+        structure_id, solar_system_id = int(structure_id), int(solar_system_id)
+    except (TypeError, ValueError):
+        return None
+    if structure_id <= 0 or solar_system_id <= 0:
+        return None
+    region_id = _region_for_system(solar_system_id)
+    if region_id is None:
+        return None
+    resolved = (solar_system_id, region_id, str(name or structure_id))
+    _runtime_structures[structure_id] = resolved
+    _sys_cache[structure_id] = resolved
+    return resolved
 
 # jumps inter-systemes absents du SDE leger -> BFS retourne ensemble vide.
 # Les ranges 2/4/5 retombent sur region-wide dans covers().

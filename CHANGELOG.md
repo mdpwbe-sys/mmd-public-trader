@@ -6,6 +6,29 @@ est en [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-09-05
+
+### Added
+- **Intel Alert**: optional proximity alerts for new R2Z2 kills around tracked
+  ESI pilots. The configurable radius defaults to five jumps; each validated
+  event produces one log/UI notification and an optional Windows sound.
+- **New Eden music controls**: the map exposes a compact play/pause and volume
+  control for an optional local soundtrack. Public builds ship without music
+  assets; unavailable audio never affects Intel Alert.
+- **Windows release tooling**: unsigned `--noupx` onefile and `--onedir`
+  comparison builds, generated VERSIONINFO, Authenticode signing helper and
+  post-build release verification.
+
+### Fixed
+- **Settings dialog**: global trade settings no longer pass the JavaScript cache
+  refresh flag through pywebview. The dialog now opens on a new installation
+  with no SSO token or connected character.
+- **Local Analyzer**: its cache now uses `%APPDATA%/MMD-Trader/cache` and the
+  packaged executable explicitly includes the lazy-loaded analyzer module.
+- **R2Z2 lifecycle**: the one shared combat stream remains active when either
+  New Eden is visible or Intel Alert is enabled, without adding a second
+  consumer.
+
 ### Corrigé
 - **New Eden security** : les valeurs brutes SDE/ESI à partir de `0.45` sont
   maintenant classées high-sec, conformément à l'affichage en jeu. Le routage

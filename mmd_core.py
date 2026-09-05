@@ -255,6 +255,27 @@ def _scan_core(orders, public_orders, source_label):
 
     import mmd_stations as stt
 
+    def _location_id(row):
+        return row.get("location_id", row.get("station_id"))
+
+    def _same_buy_hub(left_location, right_location):
+        left = stt.buy_hub_priority(left_location)
+        right = stt.buy_hub_priority(right_location)
+        return left == right and (left > 0 or int(left_location) == int(right_location))
+
+    def _buy_precedes(left, right):
+        """Priority for BUY orders: price, Jita/Perimeter hub, then same-hub age."""
+        left_price, right_price = Decimal(str(left["price"])), Decimal(str(right["price"]))
+        if left_price != right_price:
+            return left_price > right_price
+        left_location, right_location = _location_id(left), _location_id(right)
+        left_hub = stt.buy_hub_priority(left_location)
+        right_hub = stt.buy_hub_priority(right_location)
+        if left_hub != right_hub:
+            return left_hub > right_hub
+        return (_same_buy_hub(left_location, right_location) and
+                _iss_cmp(left.get("issued", ""), right.get("issued", "")) > 0)
+
     def _my_loc(o):
         """Resolution (system, region) de MA station."""
         sysid, reg, _ = stt.resolve(o["station_id"])
@@ -291,7 +312,7 @@ def _scan_core(orders, public_orders, source_label):
         - external: concurrent dans le livre public (hors tous mes persos).
         - internal: autre ordre de MES persos (conflit interne)."""
         # 1. concurrents externes (livre public deja filtre de mes ordres)
-        cands = _candidates(o)
+        external_cands = _candidates(o)
         # prix de MON ordre en Decimal (les logs EVE donnent un float) ->
         # comparaison homogene avec e_val (Decimal) dans tout classify
         o_price = Decimal(str(o["price"]))
@@ -299,12 +320,14 @@ def _scan_core(orders, public_orders, source_label):
         # PEU IMPORTE la station (FIFO + doublons marchent entre stations
         # differentes : si un de mes persos a le meme objet, il est concurrent).
         my_cid = str(o.get("char_id"))
+        internal_cands = []
         for io in internal_orders:
             if str(io.get("char_id")) == my_cid:
                 continue
             if (io["type_id"], io.get("side")) != (o["type_id"], o["side"]):
                 continue
-            cands.append(io)
+            internal_cands.append(io)
+        cands = [(pub, False) for pub in external_cands] + [(pub, True) for pub in internal_cands]
         if not cands:
             return False, "OK", None, False, False, False
         best = None
@@ -312,23 +335,22 @@ def _scan_core(orders, public_orders, source_label):
         best_is_newer = False
         alt_conflict = False
         same_price_newer = False
-        for pub in cands:
-            pub_cid = str(pub.get("char_id"))
-            is_own_alt = pub_cid in owned_char_ids and pub_cid != my_cid
+        best_row = None
+        for pub, is_own_alt in cands:
             # pour les ordres internes, la station est station_id; pour le public, location_id
             pub_loc = pub.get("location_id", pub.get("station_id"))
             # prix en Decimal (le public vient en float depuis l'ESI, les ordres
             # internes en Decimal) -> comparaison homogene avec o["price"]
             e_val = Decimal(str(pub["price"])); e_iss = pub.get("issued", "")
             is_newer = _iss_cmp(e_iss, o["issued"]) > 0
-            # FIFO outdated: un concurrent au MEME PRIX (meme tick) et PLUS RECENT
-            # -> il passe devant en FIFO. Tolerance sub-centime (bruit float).
-            if abs(e_val - o_price) < Decimal("0.001") and is_newer:
+            same_hub = (_same_buy_hub(pub_loc, o["station_id"])
+                        if o["side"] == 0 else int(pub_loc) == int(o["station_id"]))
+            if (not is_own_alt and abs(e_val - o_price) < Decimal("0.001") and
+                    same_hub and is_newer):
                 same_price_newer = True
             better = False
             if o["side"] == 0:
-                if e_val > o_price or (e_val == o_price and is_newer):
-                    better = True
+                better = _buy_precedes(pub, o)
             else:
                 if e_val < o_price or (e_val == o_price and is_newer):
                     better = True
@@ -336,22 +358,24 @@ def _scan_core(orders, public_orders, source_label):
                 continue
             if is_own_alt:
                 alt_conflict = True
-            if best is None or (o["side"] == 0 and e_val > best) or (o["side"] == 1 and e_val < best):
+                continue
+            if best is None or (o["side"] == 0 and _buy_precedes(pub, best_row)) or (o["side"] == 1 and (e_val < best or (e_val == best and is_newer))):
                 best = e_val
-                best_is_alt = is_own_alt
+                best_row = pub
+                best_is_alt = False
                 best_is_newer = is_newer
         if best is None:
             # L'ordre est gagnant (premier sur le marche).
             # On cherche le 2eme meilleur concurrent derriere nous pour calculer l'ecart (gap)
             next_best = None
-            for pub in cands:
-                pub_cid = str(pub.get("char_id"))
-                if pub_cid in owned_char_ids and pub_cid == my_cid:
-                    continue
+            for pub in external_cands:
                 e_val = Decimal(str(pub["price"]))
                 e_iss = pub.get("issued", "")
                 is_newer = _iss_cmp(e_iss, o["issued"]) > 0
-                if abs(e_val - o_price) < Decimal("0.001") and is_newer:
+                pub_loc = _location_id(pub)
+                same_hub = (_same_buy_hub(pub_loc, o["station_id"])
+                            if o["side"] == 0 else int(pub_loc) == int(o["station_id"]))
+                if abs(e_val - o_price) < Decimal("0.001") and same_hub and is_newer:
                     same_price_newer = True
                 if o["side"] == 0:  # BUY: le meilleur prix concurrent <= o_price
                     if e_val <= o_price:
@@ -362,6 +386,8 @@ def _scan_core(orders, public_orders, source_label):
                         if next_best is None or e_val < next_best:
                             next_best = e_val
 
+            if alt_conflict:
+                return True, "COMPETING_ALT", next_best, True, False, same_price_newer
             return False, "OK", next_best, False, False, same_price_newer
         if alt_conflict and not best_is_alt:
             return True, "BEST_EXTERNAL_BUT_ALT_CONFLICT", best, best_is_alt, best_is_newer, same_price_newer
@@ -392,7 +418,7 @@ def _scan_core(orders, public_orders, source_label):
         bp = Decimal(str(bp_raw)) if bp_raw is not None else None
         price = Decimal(str(o["price"]))
         price_cents = int(o["price_cents"]) if "price_cents" in o else prx.to_cents(price)
-        if need_update and bp is not None:
+        if need_update and bp is not None and not bp_is_alt:
             new_price = prx.next_price(bp, o["side"])
         elif bp is not None:
             new_price = price
@@ -470,4 +496,3 @@ def scan_authed(public_orders=None, order_books=None):
     import mmd_esi_orders as eo
     books = order_books if order_books is not None else public_orders
     return eo.scan_authed(order_books=books)
-

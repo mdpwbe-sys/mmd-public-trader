@@ -22,8 +22,8 @@ test('search result focuses the rendered node coordinates', async () => {
     cameraPosition(position, target) { this.lastCamera = { position, target }; },
   };
   const dataset = { systems: [
-    { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 0, y: 0, z: 0 } },
-    { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 1, y: 0, z: 0 } },
+    { id: 30000142, name: 'Jita', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 0, y: 0, z: 0 }, planet_count: 2, moon_count: 3, belt_count: 1, npc_station_count: 1, planets: [{ id: 1, name: 'Jita I', type_name: 'Barren', moon_count: 2 }, { id: 2, name: 'Jita II', type_name: 'Temperate', moon_count: 1 }], belts: [{ id: 3, name: 'Jita I - Asteroid Belt 1', type_id: 15 }], npc_stations: [{ id: 4, name: 'Jita - Caldari Navy', services: ['Market', 'Repair'] }] },
+    { id: 30000144, name: 'Perimeter', security: .9, region: 'The Forge', constellation: 'Kimotoro', region_id: 1, constellation_id: 10, position_m: { x: 1, y: 0, z: 0 }, planet_count: 0, moon_count: 0, belt_count: 0, npc_station_count: 0, planets: [], belts: [], npc_stations: [] },
   ], gates: [{ source: 30000142, target: 30000144 }] };
   let pilotSystemId = 30000142;
   let onMapResize;
@@ -36,6 +36,16 @@ test('search result focuses the rendered node coordinates', async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
   assert.equal(window.__eveMapTest.formatKillDate('2026-09-02T17:34:21Z'), '2026-09-02 · 17:34 UTC', 'Latest kills conserve date et heure UTC complètes');
   assert.match(window.__eveMapTest.killLocation({ solar_system_id: 30000142 }), /Jita · Kimotoro, The Forge/, 'Latest kills affiche le système, la constellation et la région');
+  assert.match(window.__eveMapTest.systemHoverMarkup(graph.nodes[0]), /Jita.*0\.90.*The Forge.*Kimotoro.*Traffic 42,315 jumps\/h.*Ships 7.*Pods 2.*NPC 183.*R2Z2 0 \/ 30 min/s, 'le hover système expose sécurité et les quatre compteurs live');
+  assert.match(window.__eveMapTest.systemHoverMarkup(graph.nodes[0]), /Tracked pilots: Pilot, Wingmate/, 'le hover système réutilise les pilotes ESI déjà synchronisés');
+  assert.match(window.__eveMapTest.systemHoverMarkup(graph.nodes[0]), /PLANETS.*2 planets · 3 moons.*Barren 1 · Temperate 1.*MINING.*1 asteroid belts.*STATIONS.*1 NPC stations.*Market · Repair/s, 'le hover système condense PI, lunes, belts et services NPC du SDE local');
+  assert.match(window.__eveMapTest.areaHoverMarkup({ id: 10, name: 'Kimotoro' }, 'constellation'), /Constellation · 2 systems.*Traffic 42,315 jumps\/h.*NPC 183.*2 planets · 3 moons.*1 belts · 1 NPC stations/s, 'le hover constellation agrège live et statique sans requête');
+  assert.match(window.__eveMapTest.areaHoverMarkup({ id: 1, name: 'The Forge' }, 'region'), /Region · 2 systems.*Traffic 42,315 jumps\/h.*NPC 183.*2 planets · 3 moons/s, 'le hover région agrège live et statique sans requête');
+  const gateData = window.__eveMapTest.gateHoverData(graph.nodes[0], graph.nodes[1], new Map([[30000142, 1], [30000144, 1]]), new Map([[30000142, 500], [30000144, 200]]));
+  assert.deepEqual(JSON.parse(JSON.stringify(gateData.flows)), { sourceEndpoint: 500, targetEndpoint: 200 }, 'le hover gate expose les parts estimées des extrémités, sans inventer de direction');
+  assert.equal(gateData.estimated_jumps, 350, 'le hover gate affiche la synthèse du trafic estimé');
+  assert.match(window.__eveMapTest.gateHoverMarkup({ source: graph.nodes[0], target: graph.nodes[1] }), /Jita ↔ Perimeter.*Estimated gate activity.*Endpoint estimates.*jumps\/h/s, 'le tooltip gate reste compact, honnête sur la direction et sans appel réseau');
+  assert.equal(window.__eveMapTest.gateHoverCandidate([{ key: 'a', a: { x: 10, y: 10 }, b: { x: 110, y: 10 } }], 55, 14)?.key, 'a', 'un lien projeté devient une cible de hover tolérante');
   elements.get('eve-map-search').value = 'ji';
   elements.get('eve-map-search').dispatch('input', { target: elements.get('eve-map-search') });
   assert.ok(graph.nodes.find(node => node.id === 30000142 && Number.isFinite(node.x)));
@@ -72,6 +82,8 @@ test('search result focuses the rendered node coordinates', async () => {
   assert.equal(window.__eveMapTest.selectionSystems(regionSelection).length, 2, 'la sélection région agrège ses systèmes');
   const constellationLive = window.__eveMapTest.aggregateLiveIntel(window.__eveMapTest.selectionSystems(constellationSelection));
   assert.equal(constellationLive.ship_jumps, 42315, 'l’intel ESI de zone agrège les systèmes disponibles sans requête supplémentaire');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.aggregateStaticIntel(window.__eveMapTest.selectionSystems(constellationSelection)))), { planet_count: 2, moon_count: 3, belt_count: 1, npc_station_count: 1 }, 'les agrégats SDE de constellation restent entièrement locaux');
+  assert.equal(window.__eveMapTest.staticSystemHoverMarkup(graph.nodes[1]), '', 'un système sans planète, belt ni station NPC ne casse pas le hover');
   assert.match(window.__eveMapTest.selectionInfoMarkup(systemSelection), /Jita.*0\.9/, 'INFOS adapte le titre à un système');
   assert.match(window.__eveMapTest.selectionInfoMarkup(constellationSelection), /Constellation.*Region/s, 'INFOS affiche région et niveau pour une constellation');
   assert.match(window.__eveMapTest.selectionInfoMarkup(regionSelection), /Region.*Systems/s, 'INFOS adapte son contenu à une région');
@@ -169,15 +181,39 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   const crossoverLabels = window.__eveMapTest.mapLabelLayers(900);
   assert.equal(crossoverLabels.length, 2, 'la transition région/constellation affiche les deux couches simultanément');
   assert.ok(crossoverLabels.every(layer => layer.opacity > 0 && layer.opacity < 1), 'la transition région/constellation est progressive');
-  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.mapLabelLayers(500))), [{ mode: 'constellation', opacity: 1 }], 'la vue région privilégie les constellations après le fondu');
+  const mediumLabels = window.__eveMapTest.mapLabelLayers(500);
+  assert.deepEqual(JSON.parse(JSON.stringify(mediumLabels.map(layer => layer.mode))), ['constellation', 'system'], 'le zoom moyen garde les constellations et une couche système sélective');
+  assert.equal(mediumLabels[0].opacity, 1, 'les constellations restent la lecture principale au zoom moyen');
   const regionFocus = { kind: 'region', area: { id: 7 } };
   assert.equal(window.__eveMapTest.isAreaMember({ region_id: 7, constellation_id: 3 }, regionFocus), true);
   assert.equal(window.__eveMapTest.isAreaMember({ region_id: 8, constellation_id: 3 }, regionFocus), false);
-  assert.equal(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 7 }, regionFocus), '#36d7a0');
-  assert.equal(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 8 }, regionFocus), '#23675b');
+  const securityPalette = [[1, '#54c9ff'], [.9, '#54c9ff'], [.8, '#45dfc8'], [.7, '#63d985'], [.6, '#b8dc63'], [.5, '#f1d163'], [.4, '#f6a75d'], [.3, '#ef8249'], [.2, '#e45d5d'], [.1, '#c84359'], [0, '#e45878'], [-.1, '#e45878']];
+  securityPalette.forEach(([status, color]) => assert.equal(window.__eveMapTest.securityColor(status), color, `security ${status} reçoit sa couleur de base`));
+  assert.equal(window.__eveMapTest.securityColor(.5), '#f1d163', 'la frontière 0.5 reste jaune');
+  assert.equal(window.__eveMapTest.securityColor(.4), '#f6a75d', 'la frontière 0.4 devient orange clair');
+  assert.equal(window.__eveMapTest.securityColor(.1), '#c84359', 'la frontière 0.1 devient rouge profond');
+  assert.equal(window.__eveMapTest.securityColor(0), '#e45878', 'la frontière 0.0 garde le magenta null-sec');
+  assert.equal(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 7 }, regionFocus), '#45dfc8');
+  assert.match(window.__eveMapTest.focusNodeColor({ security: .8, region_id: 8 }, regionFocus), /^rgb\(/, 'la désaccentuation hors zone part de la même palette de sécurité');
+  assert.equal(window.__eveMapTest.musicDuckMultiplier(5), .60, 'une alerte à cinq jumps applique le duck léger');
+  assert.equal(window.__eveMapTest.musicDuckMultiplier(3), .35, 'une alerte à trois jumps applique le duck moyen');
+  assert.equal(window.__eveMapTest.musicDuckMultiplier(1), .15, 'une alerte à un jump applique le duck fort');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.musicDuckingPlan(5))), { multiplier: .60, fadeDownMs: 250, holdMs: 3000, fadeUpMs: 2000 }, 'le duck léger a une enveloppe audio bornée');
+  assert.equal(window.__eveMapTest.musicDuckingPlan(0).multiplier, .15, 'un kill dans le système du pilote applique le duck fort');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.musicVisibilityPlan(true))), { fadeMs: 2500, pause: false }, 'ouvrir New Eden démarre la musique avec un fade-in de 2.5 s');
+  assert.deepEqual(JSON.parse(JSON.stringify(window.__eveMapTest.musicVisibilityPlan(false))), { fadeMs: 600, pause: true }, 'quitter New Eden effectue un fade-out puis une pause');
   assert.ok(window.__eveMapTest.characterMarkerScale(1800) > window.__eveMapTest.systemObjectScale(1800), 'le sélecteur de personnage reste prioritaire à distance');
   assert.ok(window.__eveMapTest.systemObjectScale(5000) <= 1.05, 'la croissance des nœuds système est fortement plafonnée');
   assert.ok(window.__eveMapTest.systemObjectScale(5000) / window.__eveMapTest.systemObjectScale(200) < 1.25, 'la compensation système augmente très lentement au dézoom');
+  assert.ok(window.__eveMapTest.trafficSize(50_000) <= 1.101, 'Traffic ne peut plus gonfler les nodes de plus de 10 %');
+  assert.ok(window.__eveMapTest.trafficNodeStyle(50_000).radius <= 3.51 && window.__eveMapTest.trafficNodeStyle(50_000).alpha <= .131, 'le halo Traffic reste un repère discret, pas une bulle concurrente');
+  const distantGates = window.__eveMapTest.gateVisualProfile(3000), localGates = window.__eveMapTest.gateVisualProfile(100);
+  assert.ok(distantGates.regionalAlpha < .2 && localGates.localAlpha < .2, 'les gates au repos restent plus calmes que les overlays tactiques');
+  assert.ok(localGates.localWidth > distantGates.localWidth, 'la topologie gagne un peu de présence seulement à proximité');
+  assert.equal(window.__eveMapTest.gateCameraFade(99_999), .14, 'une gate loin de la caméra conserve un plancher topologique discret');
+  assert.ok(localGates.combatAlpha < localGates.characterAlpha && localGates.combatWidth < localGates.characterWidth, 'une alerte combat reste sous le niveau visuel d’une gate adjacente à un pilote');
+  assert.equal(window.__eveMapTest.gateEmphasisKind({ key: '1:2', source: 1, target: 2 }, { characterSystemIds: new Set([2]), combatSystemIds: new Set([1]), tacticalSystemIds: new Set(), hoverGateKey: null }), 'character', 'une gate directement adjacente à un pilote ESI a la priorité visuelle maximale');
+  assert.equal(window.__eveMapTest.gateEmphasisKind({ key: '1:2', source: 1, target: 2 }, { characterSystemIds: new Set(), combatSystemIds: new Set([1]), tacticalSystemIds: new Set(), hoverGateKey: null }), 'combat', 'une gate combat reste mise en évidence sans dominer un pilote voisin');
   assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(300, 'sovereignty'), 'la souveraineté se regroupe visuellement à distance');
   assert.ok(window.__eveMapTest.influenceOverlayRadius(3000, 'sovereignty') > window.__eveMapTest.influenceOverlayRadius(3000, 'empire'), 'la souveraineté garde une présence distincte au dézoom');
   const empireLayers = window.__eveMapTest.influenceLayers({ faction_id: 500001 }, { sovereignty: false, empires: true }, { alliance_id: 99000001 });
@@ -211,9 +247,9 @@ test('viewport clipping retains the visible portion of a gate crossing the scree
   assert.equal(window.__eveMapTest.combatActivity(7).symbol, '🔥');
   assert.equal(window.__eveMapTest.combatActivity(10).symbol, '💀');
   const directionalGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 2], [2, 4]]), new Map([[1, 200], [2, 400]]));
-  assert.deepEqual(JSON.parse(JSON.stringify(directionalGateFlows)), { sourceToTarget: 100, targetToSource: 100 }, 'chaque sens conserve sa propre estimation de trafic');
+  assert.deepEqual(JSON.parse(JSON.stringify(directionalGateFlows)), { sourceEndpoint: 100, targetEndpoint: 100 }, 'chaque extrémité conserve sa contribution estimée');
   const asymmetricGateFlows = window.__eveMapTest.estimateGateFlows({ id: 1 }, { id: 2 }, new Map([[1, 1], [2, 4]]), new Map([[1, 1200], [2, 200]]));
-  assert.deepEqual(JSON.parse(JSON.stringify(asymmetricGateFlows)), { sourceToTarget: 1200, targetToSource: 50 }, 'les deux directions ne sont pas artificiellement fusionnées');
+  assert.deepEqual(JSON.parse(JSON.stringify(asymmetricGateFlows)), { sourceEndpoint: 1200, targetEndpoint: 50 }, 'les contributions d’extrémité ne sont pas artificiellement fusionnées');
   assert.equal(window.__eveMapTest.trafficParticlePlan(100).count, 1, '1–100 sauts utilise une particule');
   assert.equal(window.__eveMapTest.trafficParticlePlan(101).count, 2, '101–1000 sauts utilise deux particules');
   assert.equal(window.__eveMapTest.trafficParticlePlan(1001).count, 3, '1001+ sauts utilise trois particules');

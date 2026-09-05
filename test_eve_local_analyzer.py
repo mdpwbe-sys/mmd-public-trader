@@ -1,6 +1,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from eve_local_analyzer import (
     LocalAnalyzer,
@@ -70,6 +71,11 @@ class LocalAnalyzerTests(unittest.TestCase):
             self.assertEqual(result["total"], 1)
             self.assertEqual(result["pilots"][0]["character_id"], 9001)
             self.assertEqual(result["pilots"][0]["band"], "dangerous")
+
+    def test_default_cache_uses_the_current_mmd_state_path(self):
+        with patch("eve_local_analyzer.local_intel_cache_path", return_value=Path("C:/state/MMD-Trader/cache/local_intel.json")):
+            analyzer = LocalAnalyzer()
+        self.assertEqual(analyzer.cache_path, Path("C:/state/MMD-Trader/cache/local_intel.json"))
 
     def test_clipboard_watcher_ignores_same_list_and_only_handles_new_sequences(self):
         events, sequences = [], iter([1, 2, 3])

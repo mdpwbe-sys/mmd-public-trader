@@ -28,6 +28,32 @@ class EveMapBuilderTests(unittest.TestCase):
                     {"stargate_id": 600, "solar_system_id": 30000144, "destination_stargate_id": 500},
                     {"stargate_id": 501, "solar_system_id": 30000142, "destination_stargate_id": 600},
                 ],
+                "fsd/universe/mapPlanets.jsonl": [
+                    {"_key": 400001, "solarSystemID": 30000142, "celestialIndex": 1, "typeID": 2016, "moonIDs": [400101, 400102], "asteroidBeltIDs": [400201]},
+                    {"_key": 400002, "solarSystemID": 30000142, "celestialIndex": 2, "typeID": 2017, "moonIDs": [400103]},
+                ],
+                "fsd/universe/mapAsteroidBelts.jsonl": [
+                    {"_key": 400201, "solarSystemID": 30000142, "typeID": 15},
+                ],
+                "fsd/universe/npcStations.jsonl": [
+                    {"_key": 600001, "solarSystemID": 30000142, "ownerID": 1000002, "operationID": 77, "typeID": 1531},
+                ],
+                "fsd/universe/stationOperations.jsonl": [
+                    {"_key": 77, "services": [1, 2]},
+                ],
+                "fsd/universe/stationServices.jsonl": [
+                    {"_key": 1, "serviceName": {"en": "Market"}},
+                    {"_key": 2, "serviceName": {"en": "Repair"}},
+                ],
+                "fsd/universe/npcCorporations.jsonl": [
+                    {"_key": 1000002, "name": {"en": "Caldari Navy"}},
+                ],
+                "fsd/universe/types.jsonl": [
+                    {"_key": 15, "name": {"en": "Asteroid Belt"}},
+                    {"_key": 1531, "name": {"en": "Caldari Navy Assembly Plant"}},
+                    {"_key": 2016, "name": {"en": "Barren Planet"}},
+                    {"_key": 2017, "name": {"en": "Temperate Planet"}},
+                ],
             }
             with zipfile.ZipFile(archive, "w") as bundle:
                 for name, rows in payloads.items():
@@ -41,6 +67,19 @@ class EveMapBuilderTests(unittest.TestCase):
             self.assertEqual(dataset["systems"][0]["faction_id"], 500001)
             self.assertEqual(dataset["systems"][1]["faction_id"], 500001)
             self.assertEqual(len(dataset["gates"]), 1)
+            jita, perimeter = dataset["systems"]
+            self.assertEqual(jita["planet_count"], 2)
+            self.assertEqual(jita["moon_count"], 3)
+            self.assertEqual(jita["planets"][0]["type_name"], "Barren")
+            self.assertEqual(jita["planets"][0]["moon_count"], 2)
+            self.assertEqual(jita["belt_count"], 1)
+            self.assertEqual(jita["belts"][0]["type_id"], 15)
+            self.assertEqual(jita["npc_station_count"], 1)
+            self.assertEqual(jita["npc_stations"][0]["owner_name"], "Caldari Navy")
+            self.assertEqual(jita["npc_stations"][0]["services"], ["Market", "Repair"])
+            self.assertEqual(perimeter["planets"], [])
+            self.assertEqual(perimeter["belts"], [])
+            self.assertEqual(perimeter["npc_stations"], [])
 
 
 class EveMapServiceTests(unittest.TestCase):

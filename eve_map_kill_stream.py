@@ -176,7 +176,6 @@ class EveMapKillStream:
             self._on_marker = handler
 
     def recent_markers(self) -> dict:
-        self.activate()
         now = self.now()
         with self._lock:
             self._markers = {kill_id: marker for kill_id, marker in self._markers.items() if now - marker["happened_at"] <= HISTORY_TTL_SECONDS}

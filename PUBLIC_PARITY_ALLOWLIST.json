@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "ignore_paths": [
+    ".git/**", "__pycache__/**", ".venv/**", "build/**", "dist/**", "runtime/**", ".webview_data/**", "node_modules/**", "Memorie/**", "scratch/**", "reference/**", "bin/**", "installerResources/**", "_migration_backup/**", "gui/preview.html", "*.pyc", "*.pyo", "*.db", "*.log", "*.lock", "*.meta.json"
+  ],
+  "only_private": [
+    ".env", ".env.*", ".esi_cache.json", ".json_migrated.flag", "app_data.db", "broker_config.json*", "character_snapshots.json*", "last_scan_cache.json*", "sparklines_cache.json", "dup_orders.txt", "InstallationLog.txt", "components.xml", "installer.dat", "maintenancetool.*", "network.xml", "nul", "AGENTS.md", "PROMPT_*", "REFONTE_MEMOIRE.md", "render_log_test.js", "preview.html", "preview.png", "test_sso.png", "docs/**"
+  ],
+  "only_public": [
+    "PUBLIC_MIRROR_RULES.md", "PUBLIC_PARITY_ALLOWLIST.json", "WINDOWS_DISTRIBUTION.md", "SETUP.md", "MMD-Trader.spec", "build_exe.py", "build_exe.bat", "release_check.ps1", "sign_release.ps1", "version.py", "platform_state.py", "test_build_runtime.py", "test_trade_settings_contract.py", "tools/check_public_parity.py"
+  ],
+  "content_differences": [
+    {
+      "private": "README.md", "public": "README.md", "classification": "REQUIRED_PUBLIC_ADAPTATION",
+      "reason": "Public installation, naming, callback, scopes and repository documentation are intentionally neutral."
+    },
+    {
+      "private": "CHANGELOG.md", "public": "CHANGELOG.md", "classification": "REQUIRED_PUBLIC_ADAPTATION",
+      "reason": "Public release history must be preserved independently of the private workspace."
+    },
+    {
+      "private": ".env.example", "public": ".env.example", "classification": "REQUIRED_PUBLIC_ADAPTATION",
+      "reason": "Public OAuth callback and example configuration are distribution-specific."
+    },
+    {
+      "private": "evernus_sso.py", "public": "mmd_sso.py", "classification": "REQUIRED_PUBLIC_ADAPTATION",
+      "reason": "OAuth callback, user-agent and public configuration identity differ by design."
+    },
+    {
+      "private": "evernus_gui.py", "public": "mmd_gui.py", "classification": "REQUIRED_PUBLIC_ADAPTATION",
+      "reason": "The public bridge has no private soundtrack path and retains public first-run configuration. Api methods are compared separately."
+    }
+  ],
+  "api_method_exceptions": {
+    "get_eve_map_music_source": "Private source may expose a local private soundtrack; public must remain unavailable unless user-configured.",
+    "get_station_config": "Public first-run station configuration replaces private local defaults.",
+    "save_station_config": "Public first-run station configuration replaces private local defaults.",
+    "save_firstrun_config": "Public distribution onboarding only.",
+    "firstrun_status": "Public distribution onboarding only.",
+    "save_firstrun": "Public distribution onboarding only.",
+    "search_stations": "Public distribution onboarding only.",
+    "search_station": "Public distribution onboarding only.",
+    "resolve_station": "Public distribution onboarding only."
+  }
+}

@@ -1,3 +1,2 @@
-"""Version centralisee de l'application EVE Market Manager (MMD)."""
-__version__ = "0.1.6"
-VERSION = __version__
+"""Backward-compatible version export for existing modules."""
+from version import VERSION, __version__

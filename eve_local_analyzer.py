@@ -14,6 +14,8 @@ import threading
 import time
 import urllib.request
 
+from eve_map_runtime import local_intel_cache_path
+
 
 ESI_BASE = "https://esi.evetech.net/latest"
 ZKILL_BASE = "https://zkillboard.com/api"
@@ -100,8 +102,7 @@ class LocalAnalyzer:
     """Small interface around parsing, public enrichment, caching and scoring."""
 
     def __init__(self, cache_path: Path | None = None, *, now=time.time, resolve_ids=None, fetch_stats=None, resolve_names=None):
-        local = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
-        self.cache_path = Path(cache_path or local / "evernus.com" / "Evernus" / "cache" / "local_intel.json")
+        self.cache_path = Path(cache_path or local_intel_cache_path())
         self.now = now
         self.resolve_ids = resolve_ids or self._resolve_ids
         self.fetch_stats = fetch_stats or self._fetch_stats

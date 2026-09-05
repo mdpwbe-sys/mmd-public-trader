@@ -342,6 +342,10 @@ def scan_authed(order_books=None):
             access_by_char[str(c["id"])] = state
             if state == "accessible" and snap is not None:
                 shared_snapshot = snap  # premier perso autorise -> snapshot partage
+                info = fetch_structure_info(sid, c["id"])
+                if info:
+                    stt.register_structure(sid, info.get("solarSystemID"),
+                                           name=info.get("name", ""))
                 last_success_at = _t.strftime("%Y-%m-%d %H:%M:%S", _t.gmtime())
                 agg = "accessible"
             elif state in ("temporarily_unavailable", "rate_limited") and agg == "inaccessible":

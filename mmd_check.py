@@ -12,7 +12,7 @@ ordres morts (last_seen NON NULL = archive Mmd).
 Usage: double-clique mmd_check.bat -> fais Import all (3 persos) + coche
 'Show for all characters' + Import prices, puis appuie sur une touche.
 """
-import os, sqlite3, sys, subprocess, datetime
+import os, sqlite3, sys, datetime
 from platform_state import state_path
 
 # Operational DB in persistent app state dir (APPDATA/MMD-Trader); not the

@@ -9,3 +9,13 @@ from platform_state import state_path
 
 def map_cache_path() -> Path:
     return Path(state_path("cache", "eve_map_intel.json"))
+
+
+def local_intel_cache_path() -> Path:
+    """Persistent Local Analyzer cache, outside a PyInstaller temp directory."""
+    return Path(state_path("cache", "local_intel.json"))
+
+
+def intel_alert_settings_path() -> Path:
+    """Persistent New Eden proximity-alert preferences."""
+    return Path(state_path("cache", "eve_map_intel_alert.json"))
