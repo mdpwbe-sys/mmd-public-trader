@@ -822,7 +822,7 @@
     if (!host) { const alert = document.getElementById('eve-map-intel-alert-settings'); if (!alert?.parentNode) return; host = document.createElement('div'); host.id = 'eve-map-music-controls'; alert.parentNode.appendChild(host); }
     host.innerHTML = musicControlsMarkup(); host.querySelector?.('#eve-map-music-toggle')?.addEventListener('click', () => { toggleNewEdenMusic(); }); host.querySelector?.('#eve-map-music-volume')?.addEventListener('input', event => setNewEdenMusicVolume(event.target.value));
   }
-  async function callMusicBridge(method, value) { const bridge = api(); if (!bridge?.[method]) { newEdenMusic.available = false; renderMusicControls(); return null; } try { const response = await bridge[method](value); applyMusicState(response); renderMusicControls(); return response; } catch (_) { newEdenMusic.available = false; renderMusicControls(); return null; } }
+  async function callMusicBridge(method, value) { const bridge = api(); if (!bridge?.[method]) { newEdenMusic.available = false; renderMusicControls(); return null; } try { const response = value === undefined ? await bridge[method]() : await bridge[method](value); applyMusicState(response); renderMusicControls(); return response; } catch (_) { newEdenMusic.available = false; renderMusicControls(); return null; } }
   async function loadNewEdenMusic() { return callMusicBridge('get_eve_map_music_state'); }
   async function startNewEdenMusic() { newEdenMusic.visible = true; await loadNewEdenMusic(); if (newEdenMusic.manuallyPaused) return false; return Boolean((await callMusicBridge('set_eve_map_music_visible', true))?.ok); }
   function stopNewEdenMusic() { newEdenMusic.visible = false; callMusicBridge('set_eve_map_music_visible', false); }
