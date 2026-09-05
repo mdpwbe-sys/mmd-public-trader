@@ -46,6 +46,7 @@ class LocalTrackingTests(unittest.TestCase):
 
     def test_two_clients_unknown_system_and_old_session_are_safe(self):
         self._log(); self._log("Beta", 2, "Perimeter"); self.watcher.poll_once(); self.assertEqual(len(self.store.snapshot()["positions"]), 2)
+        self.assertFalse(self.store.observe_local(character_id=999, character_name="Unknown", system_name="Jita", observed_at=self.now[0], session_source="x", session_started=self.now[0]))
         self.assertFalse(self.store.observe_local(character_id=1, character_name="Alpha", system_name="Unknown", observed_at=self.now[0], session_source="x", session_started=self.now[0]))
         self.assertTrue(self.store.observe_local(character_id=1, character_name="Alpha", system_name="Perimeter", observed_at=self.now[0], session_source="new", session_started=self.now[0]))
         self.assertFalse(self.store.observe_local(character_id=1, character_name="Alpha", system_name="Jita", observed_at=self.now[0], session_source="old", session_started=self.now[0] - 1))
