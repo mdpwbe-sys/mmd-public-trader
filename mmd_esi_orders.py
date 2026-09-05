@@ -102,7 +102,7 @@ def fetch_character_orders(char_id, region=10000002):
                 "price": float(o["price"]),
                 "vol_remaining": int(o.get("volume_remain", 0)),
                 "issued": o.get("issued", ""),
-                "range": o.get("range", "region"),
+                "range": o.get("range"),
             })
         if headers and headers.get("X-Pages"):
             try:
@@ -285,7 +285,7 @@ def fetch_structure_orders(structure_id, char_id, max_workers=4):
                 "price": float(o["price"]),
                 "vol_remaining": int(o.get("volume_remain", 0)),
                 "issued": o.get("issued", ""),
-                "range": o.get("range", "region"),
+                "range": o.get("range"),
                 "location_id": int(structure_id),
             }
     return snapshot, "accessible"

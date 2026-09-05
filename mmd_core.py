@@ -283,21 +283,13 @@ def _scan_core(orders, public_orders, source_label):
 
     def _candidates(o):
         """Tous les concurrents externes+internes pertinents pour l'ordre o."""
-        sysid, reg = _my_loc(o)
         cands = ext_by_type.get((o["type_id"], o["side"]), [])
         out = []
         for pub in cands:
             if o["side"] == 0:  # BUY: ranges qui se chevauchent
-                # Un concurrent compte si:
-                #  - il couvre MA station (un vendeur chez moi le remplit), OU
-                #  - je couvre SA station (un vendeur chez lui me remplit aussi,
-                #    car mon ordre atteint sa station -> meme pool de vendeurs).
-                # Ex: mon achat Perimeter (region/1 saut) vs concurrent achat
-                # Jita station -> je couvre Jita -> concurrent direct. Symetrique.
-                pub_sys, pub_reg, _ = stt.resolve(pub["location_id"])
-                my_range = o.get("range", "region")
-                if not (stt.covers(pub["location_id"], pub.get("range", "region"), sysid, reg)
-                        or stt.covers(o["station_id"], my_range, pub_sys, pub_reg)):
+                # Candidate universe is range overlap only.  Range handling is
+                # centralised in stations: unknown/missing values stay out.
+                if not stt.buy_ranges_overlap(o, pub):
                     continue
             else:  # SELL: meme station physique
                 if pub["location_id"] != o["station_id"]:
@@ -329,7 +321,7 @@ def _scan_core(orders, public_orders, source_label):
             internal_cands.append(io)
         cands = [(pub, False) for pub in external_cands] + [(pub, True) for pub in internal_cands]
         if not cands:
-            return False, "OK", None, False, False, False
+            return False, "OK", None, False, False, False, False
         best = None
         best_is_alt = False
         best_is_newer = False
@@ -387,13 +379,25 @@ def _scan_core(orders, public_orders, source_label):
                             next_best = e_val
 
             if alt_conflict:
-                return True, "COMPETING_ALT", next_best, True, False, same_price_newer
-            return False, "OK", next_best, False, False, same_price_newer
+                return True, "COMPETING_ALT", next_best, True, False, same_price_newer, False
+            return False, "OK", next_best, False, False, same_price_newer, False
+        buy_target_requires_tick = False
+        if o["side"] == 0 and best_row is not None:
+            mine_hub = stt.buy_hub_priority(o["station_id"])
+            best_hub = stt.buy_hub_priority(_location_id(best_row))
+            # Matching an external price is enough when our hub wins the equal
+            # price tie.  A lower-priority hub (or same-hub FIFO overtake) must
+            # still take one valid CCP tick above the competitor.
+            buy_target_requires_tick = mine_hub < best_hub or (
+                abs(best - o_price) < Decimal("0.001") and
+                _same_buy_hub(_location_id(best_row), o["station_id"]) and
+                best_is_newer
+            )
         if alt_conflict and not best_is_alt:
-            return True, "BEST_EXTERNAL_BUT_ALT_CONFLICT", best, best_is_alt, best_is_newer, same_price_newer
+            return True, "BEST_EXTERNAL_BUT_ALT_CONFLICT", best, best_is_alt, best_is_newer, same_price_newer, buy_target_requires_tick
         if best_is_alt:
-            return True, "COMPETING_ALT", best, True, best_is_newer, same_price_newer
-        return True, "OUTBID_EXTERNAL", best, False, best_is_newer, same_price_newer
+            return True, "COMPETING_ALT", best, True, best_is_newer, same_price_newer, buy_target_requires_tick
+        return True, "OUTBID_EXTERNAL", best, False, best_is_newer, same_price_newer, buy_target_requires_tick
 
     # liste de tous les ordres (pour les onglets Achats/Ventes) + ceux a MAJ
     to_update = []
@@ -414,12 +418,13 @@ def _scan_core(orders, public_orders, source_label):
             str(count_id), {"total": 0, "buy": 0, "sell": 0})
 
     for o in orders:
-        need_update, status, bp_raw, bp_is_alt, best_is_newer, same_price_newer = classify(o, owned_char_ids, orders)
+        need_update, status, bp_raw, bp_is_alt, best_is_newer, same_price_newer, buy_target_requires_tick = classify(o, owned_char_ids, orders)
         bp = Decimal(str(bp_raw)) if bp_raw is not None else None
         price = Decimal(str(o["price"]))
         price_cents = int(o["price_cents"]) if "price_cents" in o else prx.to_cents(price)
         if need_update and bp is not None and not bp_is_alt:
-            new_price = prx.next_price(bp, o["side"])
+            new_price = (prx.next_price(bp, o["side"])
+                         if o["side"] == 1 or buy_target_requires_tick else bp)
         elif bp is not None:
             new_price = price
         else:

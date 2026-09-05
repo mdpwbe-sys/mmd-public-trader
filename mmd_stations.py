@@ -15,13 +15,12 @@ Chaines de resolution:
   - citadelle Upwell (id >= 1e12) : pas de faction SDE -> ID brut affiche
   - fallback: si inconnu, on garde l'ID brut (nom = str(id))
 
-Portee BUY (CCP): range 0=region, 1=systeme, 2=constellation(5 sauts),
-3=region, 4=region+5 sauts, 5=regionProfondeur(10 sauts).
-Note: le SDE leger n'inclut pas les sauts inter-systemes ; les ranges
-2/4/5 retombent sur une couverture region-wide (conservateur : on n'exclut
-pas a tort). 1 et 0/3 sont exacts.
+La portee BUY est normalisee ici, une seule fois.  Une portee absente ou
+inconnue est volontairement rejetee: elle ne devient jamais regionale.
+La topologie des sauts vient du dataset de carte deja embarque; aucun appel
+reseau n'est necessaire.
 """
-import os, json
+import os, json, logging
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # sde_light.json embarque via --add-data (build_exe.py) et present a cote du .py
@@ -38,11 +37,52 @@ def _load_sde():
     return None
 
 _SDE = _load_sde()
+_LOG = logging.getLogger(__name__)
+_INVALID_BUY_RANGES_LOGGED = set()
 
 # caches
 _sys_cache = {}
 _region_cache = {}
 _runtime_structures = {}
+
+
+def _invalid_buy_range(value):
+    """Log once and keep an unknown BUY range outside the candidate universe."""
+    marker = repr(value)
+    if marker not in _INVALID_BUY_RANGES_LOGGED:
+        _INVALID_BUY_RANGES_LOGGED.add(marker)
+        _LOG.warning("BUY range invalid or missing; ignoring order conservatively: %r", value)
+    return None
+
+
+def normalize_buy_range(value):
+    """Return (kind, depth) for the ESI/MMD BUY-range forms, or None.
+
+    STATION and SYSTEM deliberately stay different.  Integers and numeric
+    strings denote their literal jump radius; no legacy numeric value may
+    silently widen an order to the entire region.
+    """
+    if value is None or isinstance(value, bool):
+        return _invalid_buy_range(value)
+    if isinstance(value, int):
+        return ("JUMPS", value) if value >= 0 else _invalid_buy_range(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "station": "STATION",
+            "solar_system": "SYSTEM",
+            "solarsystem": "SYSTEM",
+            "system": "SYSTEM",
+            "region": "REGION",
+        }
+        if normalized in aliases:
+            return (aliases[normalized], None)
+        try:
+            depth = int(normalized)
+        except ValueError:
+            return _invalid_buy_range(value)
+        return ("JUMPS", depth) if depth >= 0 else _invalid_buy_range(value)
+    return _invalid_buy_range(value)
 
 def _env_stations():
     """Stations perso depuis .env (Trading_Upwell_ID / Sell_Station_ID)."""
@@ -201,38 +241,118 @@ def register_structure(structure_id, solar_system_id, *, name=""):
     _sys_cache[structure_id] = resolved
     return resolved
 
-# jumps inter-systemes absents du SDE leger -> BFS retourne ensemble vide.
-# Les ranges 2/4/5 retombent sur region-wide dans covers().
+_MAP_PATHS = [
+    os.path.join(HERE, "gui", "data", "eve_map.json"),
+    os.path.join(HERE, "eve_map.json"),
+]
+_JUMP_GRAPH = None
+
+
+def _jump_graph():
+    """Load the already-packaged New Eden gate topology once, offline."""
+    global _JUMP_GRAPH
+    if _JUMP_GRAPH is not None:
+        return _JUMP_GRAPH
+    graph = {}
+    for path in _MAP_PATHS:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8") as source:
+                gates = json.load(source).get("gates", [])
+            for gate in gates:
+                left, right = int(gate["source"]), int(gate["target"])
+                graph.setdefault(left, set()).add(right)
+                graph.setdefault(right, set()).add(left)
+            break
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            _LOG.warning("Unable to load offline stargate topology: %s", exc)
+    _JUMP_GRAPH = graph
+    return graph
+
+
 def jumps_bfs(start, max_depth):
-    return set()
+    """Systems reachable from *start* in at most ``max_depth`` stargate jumps."""
+    try:
+        start, max_depth = int(start), int(max_depth)
+    except (TypeError, ValueError):
+        return set()
+    if max_depth < 0:
+        return set()
+    seen, frontier = {start}, {start}
+    graph = _jump_graph()
+    for _ in range(max_depth):
+        frontier = {neighbor for node in frontier for neighbor in graph.get(node, ())
+                    if neighbor not in seen}
+        if not frontier:
+            break
+        seen.update(frontier)
+    return seen
 
-# ranges CCP -> (type, profondeur_sauts)
-# 0=region (toute la region), 1=systeme (0 saut), 2=constellation (<=5 sauts),
-# 3=region, 4=region+5 sauts, 5=regionProfondeur (<=10 sauts)
-_RANGE_DEPTH = {1: 0, 2: 5, 4: 5, 5: 10}
 
-def covers(pub_order_location, pub_order_range, target_system, target_region):
-    """True si un ordre public (location+range) couvre la station cible.
-    - target_system/target_region: resolution de MA station
-    - pub_order_range: range CCP (0..5) OU string ESI
-      ("station","solar_system","region","constellation","region_boundary_1..5")
+def covers(pub_order_location, pub_order_range, target_system, target_region,
+           target_location=None):
+    """Whether one BUY order reaches one exact sale location.
+
+    ``STATION`` only covers the matching location ID.  ``SYSTEM`` and
+    ``REGION`` compare their corresponding SDE IDs; jump ranges use the local
+    stargate graph.  Invalid ranges are conservative and never become region.
     """
-    if target_region is None or target_system is None:
+    normalized = normalize_buy_range(pub_order_range)
+    if normalized is None or target_system is None or target_region is None:
         return False
     pub_sys, pub_reg, _ = resolve(pub_order_location)
-    r = pub_order_range
-    if isinstance(r, str):
-        if r in ("region", "constellation",
-                 "region_boundary_1", "region_boundary_2", "region_boundary_3",
-                 "region_boundary_4", "region_boundary_5"):
-            return pub_reg == target_region
-        if r in ("solar_system", "station"):
-            return pub_sys == target_system
-        return pub_reg == target_region
-    # entier CCP: 0/3=region, 1=systeme, 2/4/5=a sauts (sauts absents -> region-wide)
-    if r in (0, 3):
-        return pub_reg == target_region
-    if r == 1:
-        return pub_sys == target_system
-    # ranges avec sauts : SDE leger n'a pas les sauts -> on reste region-wide
-    return pub_reg == target_region
+    if pub_sys is None or pub_reg is None:
+        return False
+    kind, depth = normalized
+    if kind == "STATION":
+        try:
+            return target_location is not None and int(pub_order_location) == int(target_location)
+        except (TypeError, ValueError):
+            return False
+    if kind == "SYSTEM":
+        return int(pub_sys) == int(target_system)
+    if kind == "REGION":
+        return int(pub_reg) == int(target_region)
+    return int(target_system) in jumps_bfs(pub_sys, depth)
+
+
+def _order_location_id(order):
+    return order.get("location_id", order.get("station_id"))
+
+
+def _covered_systems(location_id, normalized_range, system_id):
+    kind, depth = normalized_range
+    if kind == "SYSTEM":
+        return {int(system_id)}
+    if kind == "JUMPS":
+        return jumps_bfs(system_id, depth)
+    return set()
+
+
+def buy_ranges_overlap(my_order, competitor):
+    """Whether two BUY orders can reach at least one common sale location."""
+    mine_location = _order_location_id(my_order)
+    competitor_location = _order_location_id(competitor)
+    mine_range = normalize_buy_range(my_order.get("range"))
+    competitor_range = normalize_buy_range(competitor.get("range"))
+    if mine_location is None or competitor_location is None:
+        return False
+    if mine_range is None or competitor_range is None:
+        return False
+    mine_system, mine_region, _ = resolve(mine_location)
+    competitor_system, competitor_region, _ = resolve(competitor_location)
+    if None in (mine_system, mine_region, competitor_system, competitor_region):
+        return False
+    if mine_range[0] == "REGION" or competitor_range[0] == "REGION":
+        return int(mine_region) == int(competitor_region)
+    if mine_range[0] == "STATION" or competitor_range[0] == "STATION":
+        return (
+            covers(mine_location, my_order.get("range"), competitor_system,
+                   competitor_region, competitor_location) or
+            covers(competitor_location, competitor.get("range"), mine_system,
+                   mine_region, mine_location)
+        )
+    return bool(_covered_systems(mine_location, mine_range, mine_system) &
+                _covered_systems(competitor_location, competitor_range,
+                                 competitor_system))

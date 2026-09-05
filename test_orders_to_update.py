@@ -15,6 +15,10 @@ except Exception:
 
 
 STATION_ID = 60003760
+JITA_OTHER_STATION_ID = 60003761
+JAKANERVA_STATION_ID = 60009999
+JITA_SYSTEM_ID = 30000142
+JAKANERVA_SYSTEM_ID = 30009999
 PERIMETER_STRUCTURE_ID = 990000001
 PERIMETER_SYSTEM_ID = 30000144
 THE_FORGE = 10000002
@@ -161,6 +165,109 @@ class OrdersToUpdateTests(unittest.TestCase):
             (PERIMETER_SYSTEM_ID, THE_FORGE, "Perimeter test structure"),
             stations.resolve(PERIMETER_STRUCTURE_ID),
         )
+
+    def test_buy_range_one_does_not_make_remote_station_competitive(self):
+        mine = _buy("mine", location_id=STATION_ID, price_value=8.02)
+        mine["range"] = "1"
+        external = _external_buy("jakanerva", location_id=JAKANERVA_STATION_ID,
+                                 issued="2026-08-02T00:00:00Z", price_value=22.41)
+        external["range"] = "station"
+
+        def resolve(location_id):
+            locations = {
+                STATION_ID: (JITA_SYSTEM_ID, THE_FORGE, "Jita IV - Moon 4"),
+                JAKANERVA_STATION_ID: (JAKANERVA_SYSTEM_ID, THE_FORGE, "Jakanerva"),
+            }
+            return locations[int(location_id)]
+
+        with mock.patch.object(stations, "resolve", side_effect=resolve), \
+                mock.patch.object(stations, "jumps_bfs", side_effect=lambda system, depth: {system}):
+            row = core._scan_core([mine], [external], "strict BUY range")["orders_full"][0]
+        self.assertFalse(row["needs_update"])
+        self.assertEqual(price.to_cents(8.02), row["new_price_cents"])
+
+    def test_station_range_requires_the_exact_location(self):
+        with mock.patch.object(stations, "resolve", return_value=(JITA_SYSTEM_ID, THE_FORGE, "Jita")):
+            self.assertTrue(stations.covers(STATION_ID, "station", JITA_SYSTEM_ID,
+                                            THE_FORGE, STATION_ID))
+            self.assertFalse(stations.covers(STATION_ID, "station", JITA_SYSTEM_ID,
+                                             THE_FORGE, JITA_OTHER_STATION_ID))
+
+    def test_missing_and_unknown_buy_range_are_conservative(self):
+        self.assertIsNone(stations.normalize_buy_range(None))
+        self.assertIsNone(stations.normalize_buy_range("mystery-range"))
+
+    def test_buy_range_overlap_handles_station_system_and_jumps(self):
+        mine = _buy("mine", location_id=STATION_ID)
+        same_system = _external_buy("same-system", location_id=JITA_OTHER_STATION_ID,
+                                    issued="2026-08-02T00:00:00Z")
+        same_system["range"] = "solar_system"
+        remote_station = _external_buy("remote", location_id=JAKANERVA_STATION_ID,
+                                       issued="2026-08-02T00:00:00Z")
+        remote_station["range"] = "station"
+        mine["range"] = "solar_system"
+
+        def resolve(location_id):
+            locations = {
+                STATION_ID: (JITA_SYSTEM_ID, THE_FORGE, "Jita IV - Moon 4"),
+                JITA_OTHER_STATION_ID: (JITA_SYSTEM_ID, THE_FORGE, "Jita IV - Moon 5"),
+                PERIMETER_STRUCTURE_ID: (PERIMETER_SYSTEM_ID, THE_FORGE, "Perimeter"),
+                JAKANERVA_STATION_ID: (JAKANERVA_SYSTEM_ID, THE_FORGE, "Jakanerva"),
+            }
+            return locations[int(location_id)]
+
+        with mock.patch.object(stations, "resolve", side_effect=resolve), \
+                mock.patch.object(stations, "jumps_bfs", side_effect=lambda system, depth: (
+                    {JITA_SYSTEM_ID, PERIMETER_SYSTEM_ID} if system == JITA_SYSTEM_ID and depth >= 1
+                    else {PERIMETER_SYSTEM_ID, JITA_SYSTEM_ID} if system == PERIMETER_SYSTEM_ID and depth >= 1
+                    else {system}
+                )):
+            self.assertTrue(stations.buy_ranges_overlap(mine, same_system))
+            self.assertFalse(stations.buy_ranges_overlap(mine, remote_station))
+            mine["range"] = "1"
+            perimeter = _external_buy("perimeter", location_id=PERIMETER_STRUCTURE_ID,
+                                      issued="2026-08-02T00:00:00Z")
+            perimeter["range"] = "1"
+            self.assertTrue(stations.buy_ranges_overlap(mine, perimeter))
+
+    def test_fast_copy_matches_when_our_buy_hub_wins(self):
+        price_value = 300_200_000.0
+        for location_id in (STATION_ID, PERIMETER_STRUCTURE_ID):
+            with self.subTest(external_location=location_id):
+                row = self._buy_scan(
+                    _buy("mine", location_id=STATION_ID, price_value=300_000_000.0),
+                    _external_buy("external", location_id=location_id,
+                                  issued="2026-08-02T00:00:00Z", price_value=price_value),
+                )
+                self.assertTrue(row["needs_update"])
+                self.assertEqual(price.to_cents(price_value), row["new_price_cents"])
+
+    def test_fast_copy_ticks_when_perimeter_must_beat_jita(self):
+        price_value = 300_200_000.0
+        row = self._buy_scan(
+            _buy("mine", location_id=PERIMETER_STRUCTURE_ID, price_value=300_000_000.0),
+            _external_buy("jita", location_id=STATION_ID,
+                          issued="2026-08-02T00:00:00Z", price_value=price_value),
+        )
+        self.assertEqual(price.to_cents(price.next_price(price_value, 0)),
+                         row["new_price_cents"])
+
+    def test_buy_price_precedes_hub_priority(self):
+        row = self._buy_scan(
+            _buy("mine", location_id=PERIMETER_STRUCTURE_ID, price_value=300_200_000.0),
+            _external_buy("jita", location_id=STATION_ID,
+                          issued="2026-08-02T00:00:00Z", price_value=300_000_000.0),
+        )
+        self.assertFalse(row["needs_update"])
+
+    def test_esi_order_without_range_stays_unknown(self):
+        raw = {"order_id": 1, "type_id": 34, "location_id": STATION_ID,
+               "is_buy_order": True, "price": 100.0, "volume_remain": 1,
+               "issued": "2026-08-01T00:00:00Z"}
+        with mock.patch.object(esi_orders.sso, "_chars", return_value={}), \
+                mock.patch.object(esi_orders, "_get", return_value=([raw], {"X-Pages": "1"})):
+            snapshot = esi_orders.fetch_character_orders(1)
+        self.assertIsNone(snapshot[0]["range"])
     def test_two_identical_scans_keep_per_character_sum_stable(self):
         orders = [
             _order("mine-1", 34, 1, 0),
